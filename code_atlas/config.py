@@ -90,9 +90,13 @@ CHAT_STREAM_TTL_SECONDS = int(_env("CHAT_STREAM_TTL_SECONDS", "3600"))
 # Turns the chat worker runs at once.
 CHAT_MAX_CONCURRENT_TURNS = int(_env("CHAT_MAX_CONCURRENT_TURNS", "8"))
 
-# Business impact (on demand, from the Temporal report): where a run executes.
-# "inprocess" runs it on a thread of the app instead (a stopgap; a restart loses the run).
-IMPACT_RUNNER = _env("IMPACT_RUNNER", "inprocess").lower()
+# Business impact (on demand, from the Temporal report): runs are BusinessImpactWorkflow
+# on the impact-worker service. "inprocess" runs them on a thread of the app instead
+# (a stopgap if Temporal is unavailable; a restart of the app loses the run).
+IMPACT_RUNNER = _env("IMPACT_RUNNER", "temporal").lower()
+IMPACT_TASK_QUEUE = _env("IMPACT_TASK_QUEUE", "code-atlas-impact")
+# Activities the impact worker runs at once (model calls in parallel across runs).
+IMPACT_CONCURRENCY = int(_env("IMPACT_CONCURRENCY", "4"))
 
 # ============================================================================
 # AGENT SYSTEM PROMPT

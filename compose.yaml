@@ -104,6 +104,25 @@ services:
       redis:
         condition: service_healthy
 
+  # Runs business-impact jobs ("Generate business impact" in the report view): each is a
+  # BusinessImpactWorkflow (impact-<index>). Its own service, so long jobs never take chat's
+  # slots. It reads only the stored report and the request in MongoDB: no source mount,
+  # Redis or Docs MCP sign-in.
+  impact-worker:
+    build: .
+    image: code-atlas:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *app-env
+    command: ["python", "-m", "impact.worker"]
+    stop_grace_period: 45s
+    depends_on:
+      mongo:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
   # Token streams of chat turns in flight (ephemeral: no persistence, no host port).
   redis:
     image: redis:7-alpine
