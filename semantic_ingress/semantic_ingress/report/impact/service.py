@@ -77,7 +77,8 @@ def prepare_request(store, repo_id: str, request_id: str) -> list[str]:
     _, doc, _ = _load(store, repo_id, request_id)
     pins, _ = prepare(doc)
     keys = [p.key for p in pins]
-    store.update_impact_request(repo_id, request_id, {"phase": "PROCESSES", "total": len(keys), "keys": keys})
+    store.update_impact_request(repo_id, request_id, {
+        "phase": "PROCESSES", "total": len(keys), "keys": keys, "names": {p.key: p.process["name"] for p in pins}})
     return keys
 
 
@@ -124,7 +125,8 @@ def finish_request(llm, store, repo_id: str, request_id: str, mapping: ImpactMap
     store.put_business_impact(repo_id, {
         "repo_id": repo_id, "request_id": request_id, "status": OK, "error": None,
         "generated_at": now, "attempted_at": now, "source_report": result.data["source_report"],
-        "context_hash": ctx.hash, "mapping_version": mapping.version, "cost_usd": result.data["cost_usd"],
+        "context_hash": ctx.hash, "context": ctx.model_dump(), "mapping_version": mapping.version,
+        "cost_usd": result.data["cost_usd"],
         "data": result.data, "markdown": render(result.data),
     })
     store.update_impact_request(repo_id, request_id, {"status": OK, "phase": "DONE", "finished_at": now,

@@ -96,11 +96,11 @@ class AlreadyRunning(Exception):
 
 def request_progress(request: dict) -> dict:
     """Progress as the request records it (both runners keep it up to date)."""
-    results = request.get("results") or {}
+    results, names = request.get("results") or {}, request.get("names") or {}
     return {"request_id": request["_id"], "phase": request.get("phase"), "total": request.get("total", 0),
             "done": len(results), "failed": sum(1 for r in results.values() if r.get("status") == "failed"),
-            "processes": [{"key": k, "status": results[k]["status"] if k in results else "pending"}
-                          for k in request.get("keys", [])]}
+            "processes": [{"key": k, "name": names.get(k, ""), "status": results[k]["status"] if k in results
+                           else "pending"} for k in request.get("keys", [])]}
 
 
 class InProcessRunner:
@@ -287,7 +287,8 @@ async def get_impact(repo_id: str):
         return _error("No business impact for this index yet.", 404)
     return {"status": doc.get("status"), "error": doc.get("error"), "generated_at": doc.get("generated_at"),
             "attempted_at": doc.get("attempted_at"), "request_id": doc.get("request_id"),
-            "source_report": doc.get("source_report"), "stale": _stale(doc, report), "data": doc.get("data")}
+            "source_report": doc.get("source_report"), "stale": _stale(doc, report), "data": doc.get("data"),
+            "context": doc.get("context")}
 
 
 @router.get("/api/impact/{repo_id}/markdown")

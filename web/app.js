@@ -17,7 +17,7 @@
     repoSelect: $("repo-select"), repoMeta: $("repo-meta"), convs: $("conversations"), newChat: $("new-chat"),
     status: $("status"), banner: $("banner"), docsStatus: $("docs-status"), docsStatusText: $("docs-status-text"), header: $("chat-header"), chatRepo: $("chat-repo"),
     chatRepoMeta: $("chat-repo-meta"), reportToggle: $("report-toggle"), reportView: $("report-view"),
-    reportActions: $("report-actions"), reportSummary: $("report-summary"), reportDetailed: $("report-detailed"),
+    reportActions: $("report-actions"), reportSummary: $("report-summary"), reportDetailed: $("report-detailed"), reportImpact: $("report-impact"),
     reportDownload: $("report-download"), compassOpen: $("compass-open"), temporalLink: $("temporal-ui-link"),
     home: $("home"), homeView: $("home-view"), addIndex: $("add-index"), repoActions: $("repo-actions"),
     syncIndex: $("sync-index"), deleteIndex: $("delete-index"), navHome: $("nav-home"), backHome: $("back-home"),
@@ -355,10 +355,14 @@
   }
 
   // ---- Temporal report view (the conversation's index) ----
-  // Two views of one report: the summary (rendered from the report data) and the
-  // detailed report (the full Markdown document the indexer writes). Each downloads
-  // as what it is: the summary as a standalone HTML page, the detailed report as .md.
+  // Three views of one report: the summary (rendered from the report data), the
+  // detailed report (the full Markdown document the indexer writes), and the business
+  // impact (generated on demand from the report; impact.js). Each downloads as what it
+  // is: the summary and the impact brief as standalone HTML pages, the detailed report as .md.
+  const closeImpact = () => { state.report?.impact?.destroy(); if (state.report) state.report.impact = null; };
+
   function showChat() {
+    closeImpact();
     state.view = "chat";
     els.reportActions.hidden = true;
     els.reportToggle.textContent = "Temporal report";
@@ -377,12 +381,14 @@
     const repo = currentRepo();
     if (!repo) return;
     const c = active();
+    closeImpact();
     state.view = "report"; state.report = null;
     layout();
     els.reportActions.hidden = true;
     els.reportToggle.textContent = "Back to chat";
     els.reportView.innerHTML = '<div class="report"><p class="muted">Loading the report…</p></div>';
     try {
+      const hasImpact = fetch(`/api/impact/${encodeURIComponent(repo)}`).then((r) => r.ok).catch(() => false);
       const res = await fetch(`/api/report/${encodeURIComponent(repo)}`);
       const body = await res.json();
       if (state.view !== "report" || active() !== c || currentRepo() !== repo) return;  // the user moved on
@@ -394,7 +400,7 @@
         els.reportView.appendChild(empty);
         return;
       }
-      state.report = { repo, payload: body, markdown: null, mode: "summary" };
+      state.report = { repo, payload: body, markdown: null, mode: "summary", hasImpact: await hasImpact };
       els.reportActions.hidden = false;
       showReportMode("summary");
     } catch (e) {
@@ -402,21 +408,36 @@
     }
   }
 
-  async function showReportMode(mode) {
+  const discuss = (text) => {
+    showChat(); renderMessages(); renderComposer();
+    els.input.value = text;
+    autosize(); els.input.focus();
+  };
+
+  async function showReportMode(mode, { focus } = {}) {
     const r = state.report;
     if (!r) return;
+    closeImpact();
     r.mode = mode;
     els.reportSummary.setAttribute("aria-pressed", String(mode === "summary"));
     els.reportDetailed.setAttribute("aria-pressed", String(mode === "detailed"));
-    els.reportDownload.title = mode === "summary" ? "Download the summary as an HTML page" : "Download the detailed report as Markdown";
+    els.reportImpact.setAttribute("aria-pressed", String(mode === "impact"));
+    els.reportDownload.title = { summary: "Download the summary as an HTML page", detailed: "Download the detailed report as Markdown",
+      impact: "Download the brief you are viewing as an HTML page" }[mode];
     els.reportDownload.disabled = mode === "detailed" && !r.markdown;
     if (mode === "summary") {
       window.renderTemporalReport(els.reportView, r.payload, {
-        onDiscuss: (name) => {
-          showChat(); renderMessages(); renderComposer();
-          els.input.value = `Tell me about the Temporal opportunity for "${name}": what would change, and what would we gain?`;
-          autosize(); els.input.focus();
-        },
+        onDiscuss: (name) => discuss(`Tell me about the Temporal opportunity for "${name}": what would change, and what would we gain?`),
+        onImpact: r.hasImpact ? (name) => showReportMode("impact", { focus: name }) : null,
+      });
+      els.reportView.scrollTop = 0;
+      return;
+    }
+    if (mode === "impact") {
+      r.impact = window.renderBusinessImpact(els.reportView, { repo: r.repo }, {
+        focus,
+        isCurrent: () => reportCurrent(r, "impact"),
+        onDiscuss: (name) => discuss(`What's the business case for "${name}"? Which failure stories matter most, and what should I ask the customer?`),
       });
       els.reportView.scrollTop = 0;
       return;
@@ -478,6 +499,7 @@
   async function downloadReport() {
     const r = state.report;
     if (!r) return;
+    if (r.mode === "impact") { r.impact?.download(); return; }
     if (r.mode === "detailed") {
       if (r.markdown) saveFile(`${r.repo}-temporal-report-detailed.md`, "text/markdown;charset=utf-8", r.markdown);
       return;
@@ -844,6 +866,7 @@ ${clone.outerHTML}
   });
   els.reportSummary.addEventListener("click", () => { if (state.report?.mode !== "summary") showReportMode("summary"); });
   els.reportDetailed.addEventListener("click", () => { if (state.report?.mode !== "detailed") showReportMode("detailed"); });
+  els.reportImpact.addEventListener("click", () => { if (state.report?.mode !== "impact") showReportMode("impact"); });
   els.reportDownload.addEventListener("click", downloadReport);
   els.compassOpen.addEventListener("click", openCompass);
 

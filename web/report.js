@@ -42,7 +42,7 @@
 
   const verdictClass = (v) => (v === "suitable" ? "good" : v === "borderline" ? "warn" : "poor");
 
-  function opportunityCard(p, titles, onDiscuss) {
+  function opportunityCard(p, titles, onDiscuss, onImpact) {
     const card = h("article", `opp ${verdictClass(p.verdict_class)}`);
     const top = h("div", "opp-top");
     const titleBox = h("div", "opp-title");
@@ -74,6 +74,12 @@
     talk.type = "button";
     talk.onclick = () => onDiscuss(p.name);
     actions.append(more, talk);
+    if (onImpact) {
+      const impact = h("button", "link", "See business impact");
+      impact.type = "button";
+      impact.onclick = () => onImpact(p.name);
+      actions.append(impact);
+    }
     card.append(actions);
     return card;
   }
@@ -205,7 +211,7 @@
     return box;
   }
 
-  window.renderTemporalReport = function (container, payload, { onDiscuss }) {
+  window.renderTemporalReport = function (container, payload, { onDiscuss, onImpact }) {
     container.innerHTML = "";
     const data = payload.data;
     const conv = data.conversion || {};
@@ -239,7 +245,7 @@
         : "No Temporal opportunities: none of the processes found gains enough from durable execution."));
       if (opps.length) {
         const grid = h("div", "opp-grid");
-        opps.forEach((p) => grid.append(opportunityCard(p, titles, onDiscuss)));
+        opps.forEach((p) => grid.append(opportunityCard(p, titles, onDiscuss, onImpact)));
         oppSec.append(grid);
       } else if (misfits.length) {
         const ul = h("ul", "reasons");

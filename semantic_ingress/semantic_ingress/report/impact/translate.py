@@ -38,6 +38,7 @@ from semantic_ingress.report.impact.prompts import (
     process_user_prompt,
     summary_user_prompt,
 )
+from semantic_ingress.report.impact.render import first_step
 from semantic_ingress.report.impact.validate import (
     ImpactGrounding,
     clean_process,
@@ -397,6 +398,7 @@ def synthesize(llm, cache: ReportCache, mapping: ImpactMapping, ctx: ImpactConte
         "model_calls": calls,
         "cost_usd": round(usage.total_cost_usd, 4),
     }
+    data["first_step"] = first_step(data)
     return ImpactResult(data, usage, calls)
 
 

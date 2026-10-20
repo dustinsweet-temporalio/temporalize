@@ -133,7 +133,7 @@ def render_exec(data: dict) -> str:
         elif p.get("missing_inputs"):
             out += ["No cost estimate yet: the customer has not stated the inputs. See the discovery sheet.", ""]
     out += _not_worth(data)
-    out += ["## Recommended first step", "", first_step(data), ""]
+    out += ["## Recommended first step", "", data.get("first_step") or first_step(data), ""]
     out += _assumptions(data)
     return "\n".join(out + footer(data)) + "\n"
 
