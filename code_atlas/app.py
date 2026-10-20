@@ -14,7 +14,8 @@ Serves the chat UI and a small API:
     DELETE /api/chat/{repo_id}/{session_id}       end the conversation's session workflow
     GET  /api/chat/{repo_id}/{session_id}/turns/{turn_id}/stream  reattach to a turn (after a reload)
 
-Indexing from the UI (pick a folder, check, sync, follow progress, delete) is in indexing.py.
+Indexing from the UI (pick a folder, check, sync, follow progress, delete) is in indexing.py;
+business impact from the Temporal report (/api/impact/...) is in impact_api.py.
 
 Run with: uvicorn app:app --host 0.0.0.0 --port 8080
 """
@@ -66,6 +67,7 @@ from config import (
     TEMPORAL_ADDRESS,
     TEMPORAL_NAMESPACE,
 )
+from impact_api import router as impact_router
 from indexing import router as indexing_router, ui_settings as indexing_settings
 from utils.mongo import get_mongo_client
 from utils.formatters.lens import index_lens_info
@@ -113,6 +115,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Code Atlas", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.include_router(indexing_router)
+app.include_router(impact_router)
 
 
 @app.middleware("http")

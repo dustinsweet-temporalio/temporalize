@@ -426,3 +426,45 @@ def build_business_impact(llm, store, repo_id: str, ctx: ImpactContext, mapping:
     logger.info("impact_built", repo_id=repo_id, processes=len(pins), calls=result.calls,
                 cost_usd=result.data["cost_usd"], cache_hits=cache.hits, cache_misses=cache.misses)
     return result
+
+
+# --- what a run would do (no model calls) -------------------------------------------------
+
+EST_OUTPUT_TOKENS = 1500           # a process answer, from real runs (about 1,100-1,250)
+EST_SUMMARY_TOKENS = (700, 400)    # summary call: input, output
+
+
+def estimate_run(store, repo_id: str, ctx: ImpactContext, mapping: ImpactMapping, model_id: str,
+                 fresh: bool = False) -> dict:
+    """
+    How many processes would call the model, how many are cached or skipped, and a cost estimate
+    (from the prompt sizes; it leaves out the occasional retry).
+    """
+    doc = store.get_report(repo_id)
+    pins, errors = prepare(doc)
+    titles, items = path_titles(doc), numbered(ctx)
+    cache = ReportCache(store, repo_id, fresh)
+    calls, cached, skipped, tokens_in = [], [], [{"name": s["name"], "reason": s["reason"]} for s in errors], 0
+    for pin in pins:
+        p = pin.process
+        if p["verdict_class"] == "not suitable":
+            skipped.append({"name": p["name"], "reason": "not suitable"})
+            continue
+        sig = derive_signals(p)
+        eligible = eligible_categories(sig, mapping)
+        if not eligible:
+            skipped.append({"name": p["name"], "reason": "no grounded consequence"})
+            continue
+        if not fresh and store.get_cached(repo_id, cache.key("impact_process", *_cache_parts(p, ctx, mapping, model_id))):
+            cached.append(p["name"])
+            continue
+        calls.append(p["name"])
+        tokens_in += (len(PROCESS_SYSTEM) + len(process_prompt(pin, sig, eligible, items, mapping, titles))) // 4
+    summary_calls = 1 if calls else 0  # with every process cached, the summary is too (its input is unchanged)
+    tokens_out = len(calls) * EST_OUTPUT_TOKENS + summary_calls * EST_SUMMARY_TOKENS[1]
+    tokens_in += summary_calls * EST_SUMMARY_TOKENS[0]
+    usage = LLMUsage(input_tokens=tokens_in, output_tokens=tokens_out)
+    return {"will_call": calls, "cached": cached, "skipped": skipped, "summary_calls": summary_calls,
+            "est_input_tokens": tokens_in, "est_output_tokens": tokens_out,
+            "est_cost_usd": round(usage.total_cost_usd, 4),
+            "report_generated_at": doc.get("generated_at"), "model": model_id}

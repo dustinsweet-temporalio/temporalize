@@ -152,6 +152,14 @@ def test_context_is_numbered_by_sentence_and_hashed():
     assert not ImpactContext().present and numbered(ImpactContext()) == {}
 
 
+def test_context_hash_survives_a_round_trip_through_storage():
+    import json
+    for ctx in (ImpactContext(), ImpactContext(hourly_rate=90), CONTEXT):
+        stored = json.loads(json.dumps(ctx.model_dump()))
+        assert ImpactContext.model_validate(stored).hash == ctx.hash
+    assert ImpactContext(hourly_rate=90).hash == ImpactContext(hourly_rate=90.0).hash
+
+
 def test_context_caps_and_currency_are_validated():
     with pytest.raises(ValueError):
         ImpactContext(text="x" * 4001)

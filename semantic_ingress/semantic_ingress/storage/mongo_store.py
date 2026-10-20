@@ -7,10 +7,11 @@ named ``{prefix}_{repo_id}``, with ``file_summaries``, ``folder_summaries`` and
 ``repo_summaries`` collections. The public methods keep the names and return
 shapes the generation orchestrator already relies on.
 """
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
-from pymongo import MongoClient, UpdateOne
+from pymongo import DESCENDING, MongoClient, UpdateOne
 from pymongo.errors import OperationFailure, PyMongoError
 
 from semantic_ingress.config import MongoConfig
@@ -32,10 +33,19 @@ PROCESS_CARDS_COLLECTION = "process_cards"
 # The latest Temporal report, and cached results of its model calls (keyed on their inputs).
 REPORTS_COLLECTION = "reports"
 REPORT_CACHE_COLLECTION = "report_cache"
+# Business-impact runs: each request (with the customer context it was given) and its
+# per-process results. Removed IMPACT_REQUEST_TTL after the last write; the result
+# itself is kept in REPORTS_COLLECTION.
+IMPACT_REQUESTS_COLLECTION = "impact_requests"
+IMPACT_REQUEST_TTL = timedelta(days=7)
 
 # Text search covers the summary prose and the lens prose; summary text ranks higher.
 TEXT_INDEX_NAME = "text_idx"
 TEXT_INDEX_WEIGHTS = {"prose_summary": 2, "lens_prose": 1}
+
+
+def _expire_at() -> datetime:
+    return datetime.now(timezone.utc) + IMPACT_REQUEST_TTL
 
 
 class MongoStoreError(Exception):
@@ -63,6 +73,7 @@ class MongoStore:
 
         self.prefix = prefix
         self.log = logger.bind(component="mongo_store", prefix=prefix)
+        self._ttl_ready: set[str] = set()  # databases whose impact request TTL index exists
 
         self.client: MongoClient = MongoClient(
             config.url,
@@ -371,6 +382,50 @@ class MongoStore:
     def put_report(self, repo_id: str, doc: dict[str, Any]) -> None:
         """Replace the stored Temporal report."""
         self._put_one(repo_id, REPORTS_COLLECTION, {**doc, "_id": f"{repo_id}::temporal_report"})
+
+    def get_business_impact(self, repo_id: str) -> dict[str, Any] | None:
+        """The stored business impact (latest), or None."""
+        return self._get_one(repo_id, REPORTS_COLLECTION, f"{repo_id}::business_impact")
+
+    def put_business_impact(self, repo_id: str, doc: dict[str, Any]) -> None:
+        """Replace the stored business impact."""
+        self._put_one(repo_id, REPORTS_COLLECTION, {**doc, "_id": f"{repo_id}::business_impact"})
+
+    def put_impact_request(self, repo_id: str, doc: dict[str, Any]) -> None:
+        """Insert or replace a business-impact request (must carry `_id`, the request id)."""
+        self._ensure_request_ttl(repo_id)
+        self._put_one(repo_id, IMPACT_REQUESTS_COLLECTION, {**doc, "expire_at": _expire_at()})
+
+    def get_impact_request(self, repo_id: str, request_id: str) -> dict[str, Any] | None:
+        return self._get_one(repo_id, IMPACT_REQUESTS_COLLECTION, request_id)
+
+    def update_impact_request(self, repo_id: str, request_id: str, fields: dict[str, Any]) -> None:
+        """Set fields on a request (dotted paths allowed, e.g. results.<key>); repeating it is harmless."""
+        database_name = self._get_database_name(repo_id)
+        try:
+            self.client[database_name][IMPACT_REQUESTS_COLLECTION].update_one(
+                {"_id": request_id}, {"$set": {**fields, "expire_at": _expire_at()}})
+        except PyMongoError as e:
+            raise MongoStoreError(f"Updating an impact request failed on {database_name}: {e}") from e
+
+    def latest_impact_request(self, repo_id: str) -> dict[str, Any] | None:
+        """The newest business-impact request, or None."""
+        database_name = self._get_database_name(repo_id)
+        try:
+            return self.client[database_name][IMPACT_REQUESTS_COLLECTION].find_one(
+                {}, sort=[("created_at", DESCENDING)])
+        except PyMongoError as e:
+            raise MongoStoreError(f"Reading impact requests failed on {database_name}: {e}") from e
+
+    def _ensure_request_ttl(self, repo_id: str) -> None:
+        database_name = self._get_database_name(repo_id)
+        if database_name in self._ttl_ready:
+            return
+        try:
+            self.client[database_name][IMPACT_REQUESTS_COLLECTION].create_index("expire_at", expireAfterSeconds=0)
+        except PyMongoError as e:
+            raise MongoStoreError(f"Creating the impact request TTL index failed on {database_name}: {e}") from e
+        self._ttl_ready.add(database_name)
 
     def get_cached(self, repo_id: str, key: str) -> dict[str, Any] | None:
         """A cached report step result (see semantic_ingress.report.cache), or None."""

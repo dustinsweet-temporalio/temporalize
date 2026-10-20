@@ -90,6 +90,10 @@ CHAT_STREAM_TTL_SECONDS = int(_env("CHAT_STREAM_TTL_SECONDS", "3600"))
 # Turns the chat worker runs at once.
 CHAT_MAX_CONCURRENT_TURNS = int(_env("CHAT_MAX_CONCURRENT_TURNS", "8"))
 
+# Business impact (on demand, from the Temporal report): where a run executes.
+# "inprocess" runs it on a thread of the app instead (a stopgap; a restart loses the run).
+IMPACT_RUNNER = _env("IMPACT_RUNNER", "inprocess").lower()
+
 # ============================================================================
 # AGENT SYSTEM PROMPT
 # ============================================================================

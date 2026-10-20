@@ -75,15 +75,22 @@ def _assumptions(data: dict) -> list[str]:
 
 
 def _not_worth(data: dict) -> list[str]:
-    rows = [s for s in data.get("skipped", []) if s["reason"] in ("not suitable", "no grounded consequence")]
-    if not rows:
-        return []
-    out = ["## Not worth pursuing", ""]
-    for s in rows:
-        out.append(f"- **{one_line(s['name'])}**: {one_line(s.get('detail'))}")
-        if s.get("would_change"):
-            out.append(f"  - Would change if: {'; '.join(one_line(w).rstrip('.') for w in s['would_change'])}.")
-    return out + [""]
+    out = []
+    rows = [s for s in data.get("skipped", []) if s["reason"] == "not suitable"]
+    if rows:
+        out += ["## Not worth pursuing", ""]
+        for s in rows:
+            out.append(f"- **{one_line(s['name'])}**: {one_line(s.get('detail'))}")
+            if s.get("would_change"):
+                out.append(f"  - Would change if: {'; '.join(one_line(w).rstrip('.') for w in s['would_change'])}.")
+        out.append("")
+    quiet = [s for s in data.get("skipped", []) if s["reason"] == "no grounded consequence"]
+    if quiet:
+        out += ["## No failure story from the code", "",
+                "The Temporal report rates these processes a fit, but their code facts show nothing a crash would "
+                "lose, so there is no business story to tell yet:", ""]
+        out += [f"- **{one_line(s['name'])}**" for s in quiet] + [""]
+    return out
 
 
 def _not_assessed(data: dict) -> list[str]:

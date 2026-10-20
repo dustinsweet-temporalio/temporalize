@@ -41,7 +41,7 @@ class ImpactContext(BaseModel):
     audience: Literal["exec", "champion", "discovery"] = Field(
         default="exec", description="The view shown first; every view is always built")
     currency: str = Field(default="USD", pattern=r"^(?:[A-Z]{3}|[$€£¥₹])$")
-    hourly_rate: float = Field(default=0, ge=0, le=100_000, description="Loaded staff cost per hour; 0 if not given")
+    hourly_rate: float = Field(default=0.0, ge=0, le=100_000, description="Loaded staff cost per hour; 0 if not given")
 
     model_config = {"extra": "forbid", "frozen": True}
 
@@ -57,7 +57,8 @@ class ImpactContext(BaseModel):
     @property
     def hash(self) -> str:
         """Content hash of everything that changes the output (the default view does not)."""
-        blob = json.dumps(self.model_dump(exclude={"audience"}), sort_keys=True)
+        fields = {**self.model_dump(exclude={"audience"}), "hourly_rate": float(self.hourly_rate)}  # 90 == 90.0
+        blob = json.dumps(fields, sort_keys=True)
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 

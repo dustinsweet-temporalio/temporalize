@@ -99,11 +99,13 @@ def standard_processes():
 
 
 class FakeStore:
-    """The store methods impact generation uses: the report and the report cache."""
+    """The MongoStore methods business impact uses: the report, the cache, the impact and its requests."""
 
     def __init__(self, doc=None):
         self.doc = doc
         self.cache = {}
+        self.impact = None
+        self.requests = {}
 
     def get_report(self, repo_id):
         return copy.deepcopy(self.doc)
@@ -113,6 +115,33 @@ class FakeStore:
 
     def put_cached(self, repo_id, key, value):
         self.cache[key] = copy.deepcopy({"_id": key, **value})
+
+    def get_business_impact(self, repo_id):
+        return copy.deepcopy(self.impact)
+
+    def put_business_impact(self, repo_id, doc):
+        self.impact = copy.deepcopy({**doc, "_id": f"{repo_id}::business_impact"})
+
+    def put_impact_request(self, repo_id, doc):
+        self.requests[doc["_id"]] = copy.deepcopy(doc)
+
+    def get_impact_request(self, repo_id, request_id):
+        return copy.deepcopy(self.requests.get(request_id))
+
+    def update_impact_request(self, repo_id, request_id, fields):
+        doc = self.requests.get(request_id)
+        if doc is None:
+            return
+        for path, value in fields.items():
+            target, *rest = path.split(".")
+            if rest:
+                doc.setdefault(target, {})[rest[0]] = copy.deepcopy(value)
+            else:
+                doc[target] = copy.deepcopy(value)
+
+    def latest_impact_request(self, repo_id):
+        docs = sorted(self.requests.values(), key=lambda d: d["created_at"])
+        return copy.deepcopy(docs[-1]) if docs else None
 
 
 def story(**over):
