@@ -13,7 +13,7 @@ ALL_TOOLS = [
     *ALL_SEARCH_TOOLS,      # 1 tool: text search
     *ALL_SOURCE_TOOLS,      # 4 tools: 2 source store (primary) + 2 manual (last resort)
     *ALL_SYSTEM_TOOLS,      # 1 tool: version
-    *ALL_REPORT_TOOLS,      # 2 tools: the stored Temporal report, Temporal docs search
+    *ALL_REPORT_TOOLS,      # 3 tools: the stored Temporal report, its business impact, Temporal docs search
 ]
 
 __all__ = [

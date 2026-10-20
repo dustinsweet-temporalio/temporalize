@@ -47,6 +47,10 @@ All settings live in `.env` (copy [`.env.example`](../.env.example)). Compose pa
 | `CHAT_MAX_CONCURRENT_TURNS` | `8` | chat-worker | Turns the chat worker runs at once |
 | `CHAT_TASK_QUEUE` | `code-atlas-chat` | app, chat-worker | Temporal task queue for chat sessions |
 | `REDIS_URL` | `redis://redis:6379/0` | app, chat-worker | Redis for chat token streams (set by compose) |
+| `IMPACT_RUNNER` | `temporal` | app | Where business-impact runs execute: `temporal` (a `BusinessImpactWorkflow` on the `impact-worker` service) or `inprocess` (a thread of the app; a stopgap, lost on restart) |
+| `IMPACT_TASK_QUEUE` | `code-atlas-impact` | app, impact-worker | Temporal task queue for business-impact runs |
+| `IMPACT_CONCURRENCY` | `4` | impact-worker | Activities (mostly model calls) the impact worker runs at once |
+| `IMPACT_MAPPING_PATH` | built into the image | app, impact-worker | Path to `business-impact.yaml` (consequence categories, severity rules and cost formulas); its hash is part of every impact cache key |
 
 Set by `compose.yaml` (no need to change): `MONGO_URL=mongodb://mongo:27017`, `SOURCE_DIR=/data/source`, `TEMPORAL_ADDRESS=temporal:7233`, `TEMPORAL_NAMESPACE=default`, `TEMPORAL_UI_URL=http://localhost:${TEMPORAL_UI_PORT:-8233}`, `COMPASS_URL=http://compass:8080`, `COMPASS_PUBLIC_URL=http://localhost:<COMPASS_PORT>`, `REDIS_URL=redis://redis:6379/0`, `REPOS_ROOT` (blank means `$HOME`), `HOST_HOME=$HOME` (so `~` typed in the UI means your home directory).
 
@@ -76,5 +80,7 @@ If a request fails with a 400, the error names the rejected parameter. Also upda
 | Stored Temporal report | `reports` collection (the latest report, with its commit and versions); cached report steps in `report_cache` |
 | Report rubric | `knowledge/temporal-rubric.yaml`, built into the image at `/app/knowledge` |
 | Sync workflow history | `temporal-data` volume (the dev server's SQLite file) |
+| Business impact | `reports` collection (`<name>::business_impact`: the latest result, its views as Markdown, and the context it was built with); each run's request (with the customer context) and per-process results in `impact_requests`, removed 7 days after its last write; cached answers in `report_cache`. Workflow history holds only ids, keys, process names and counts |
+| Business-impact mapping | `knowledge/business-impact.yaml`, built into the image at `/app/knowledge` |
 | Staged summaries of a sync in progress | `code_atlas_ingest` database (MongoDB); removed when the run finishes, or after 7 days for an abandoned run |
 | Why the worker service cannot run a UI sync | `worker_status` collection in `code_atlas_ingest`, one document per index; cleared when the run starts, or when the index is deleted |

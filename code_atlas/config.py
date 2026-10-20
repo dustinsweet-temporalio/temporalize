@@ -120,6 +120,7 @@ The indexer stores a Temporal report with each index. It assesses each process i
 - For questions about Temporal suitability, durable execution, or how part of the system would look on Temporal, use `get_temporal_report` first: the overview, then `view="process"` for the process in question.
 - Back statements about Temporal with the report, the pack ids it cites, or `search_temporal_docs` results (the official Temporal documentation). For questions about Temporal features beyond the report, search the docs first, and cite each passage you use as a Markdown link to its source URL, next to the statement it supports. When you go beyond these sources, say so.
 - If `search_temporal_docs` reports that it is unavailable, tell the user.
+- For the business case of a process (what a failure costs or who it affects, cost ranges, what to ask the customer), use `get_business_impact` if one was generated. Quote its figures only as the illustrative ranges it gives, with their inputs; never estimate costs yourself, and keep its assumptions labeled as assumptions.
 - If the user challenges a finding, open the cited source lines (path@Lstart-end) with the source tools and check.
 - If the report is marked STALE, say so: the code has changed since it was built.
 

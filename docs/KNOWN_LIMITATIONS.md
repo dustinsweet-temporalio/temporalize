@@ -72,3 +72,15 @@ Each conversation is a Temporal session workflow that keeps the recent context (
 - **Only the latest report is kept.** Rebuilding replaces it; earlier reports are not stored.
 - **Docs search in chat uses your personal sign-in.** The app container reads the same refresh token as the indexer. If the sign-in expires, the sidebar light turns red and chat says it cannot search the docs; run `python3 scripts/mcp_login.py`, then restart the app.
 - **Chat is guided, not checked.** The report's claims are checked in code. The chat assistant is told to rely on the report and the docs and to cite them, but its answers are not checked the same way.
+
+## 10. Business impact
+
+- **Only translates conversion findings.** An index whose report has status `full` (it already uses Temporal) gets no business impact: translating the evaluation findings into business risk is not built yet.
+- **Default cost inputs are placeholders.** The hourly rate and the shares in `knowledge/business-impact.yaml` (`default_range`) were not set by anyone who knows the customer. They are tagged "default" wherever they appear; have someone review them before showing estimates to a customer.
+- **Costs need numbers the customer stated.** A cost input is used only if a context item states that number. The model may not convert units or multiply, so "~40k payouts/day" does not become "failed runs per month"; it becomes a discovery question instead.
+- **The figure check is a heuristic.** Prose with currency, percentages, rates or large numbers is rejected, but numbers written as words get through. What it rejects is listed under "What was filtered out".
+- **Estimates are per process.** Two processes can rest on the same stated numbers (for example the same monthly failure count); the views never add estimates up, and neither should a reader.
+- **It inherits the report's drift.** Verdicts near the threshold move between report runs, and the business case follows them. Borderline and low-confidence processes are capped at a moderate case.
+- **One result per index.** Generating again replaces the result; there is no history of earlier ones and no per-prospect variants.
+- **Context goes to the model provider.** Like your code summaries, the customer context is sent to the Anthropic API. It is stored in the index's database (with the result, and with the request for 7 days) and never in Temporal workflow history or logs.
+- **`/check` is an estimate.** It counts the processes that would call the model and sizes their prompts; it leaves out the occasional retry.

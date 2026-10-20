@@ -84,6 +84,25 @@ It uses only the index, the mirrored source, the knowledge pack, the report rubr
 
 A first report costs about $0.15–0.30 per process investigated (at most 8). Every model step is cached on its inputs, so re-indexing unchanged code rebuilds the report for about nothing, and a change re-runs only the processes it touches; `./scripts/report.sh my-service --fresh` runs everything again.
 
+
+### Business impact
+
+For a sales conversation, the report view has a third mode next to **Summary** and **Detailed report**: **Business impact**. On demand, it turns the verified facts of the Temporal report into three documents:
+
+- **Exec brief** (for the economic buyer): the ranked failure stories in plain language, who feels each one, a cost range only where the customer stated the inputs, what is not worth pursuing, and a first step.
+- **Champion brief** (for the engineering lead): the same stories with the code facts and line references behind them, what a crash loses today, what changes with Temporal (copied from the report's design), the verdict and a proof-of-concept scope.
+- **Discovery sheet** (for the Solutions Architect): the questions to ask, grouped by who to ask, that would turn assumptions into facts, including the missing cost inputs.
+
+Every failure story cites facts from the process card (F ids, checked against the source by the report) and, where used, the customer context (C ids). Anything else is labeled an assumption, and code checks every answer: a story without a valid citation, a category the card does not support, or a figure in prose is dropped and listed under **What was filtered out**. The model never does arithmetic: cost ranges are computed in code from the formulas in `knowledge/business-impact.yaml`, from numbers the context states (copied, not converted) or from labeled placeholder defaults, and the formula and its inputs are shown. With no context the briefs are qualitative only. Processes the report rates not suitable, or whose code shows nothing a crash would lose, cost no model call and are listed as such.
+
+- **Generate:** open **Business impact**, optionally add customer context (call notes, pain points, industry, volumes, currency and an hourly staff cost), and click **Generate business impact**. The check line says beforehand how many processes will use the model and roughly what it costs (about $0.02–0.03 per process). The context is sent to the model provider, like your code summaries, and stored in the index's database; it never enters Temporal workflow history or the logs.
+- **Runs on Temporal:** each run is a `BusinessImpactWorkflow` (`impact-<name>` in the Temporal UI) on the `impact-worker` service. One run per index at a time; a run survives a worker restart, and **Cancel** stops it. `IMPACT_RUNNER=inprocess` runs it in the app instead, as a stopgap.
+- **Reruns are free when nothing changed:** every model answer is cached on its inputs (the process card, the verdict, the context, the mapping file and the model). **Regenerate** runs everything again; the result is marked stale when the Temporal report is rebuilt.
+- **Downloads and chat:** each brief downloads as an HTML page or Markdown, and the chat can read the result (ask "what's the business case for …?").
+- **From the command line:** `python scripts/run_impact.py --repo <name>` (inside the compose network) or `--report-json` on an exported report prints the three views. API details are in [code_atlas/README.md](code_atlas/README.md#business-impact-api); limitations in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md#10-business-impact).
+
+The default cost inputs in `knowledge/business-impact.yaml` (hourly rate, the share of work repeated) are placeholders: review them before showing estimates to a customer.
+
 ## Choosing models
 
 Set these in `.env`; any Anthropic model ID works. Defaults are `claude-sonnet-5-5` for both.
@@ -119,7 +138,7 @@ All settings are documented in [`.env.example`](.env.example) and [docs/CONFIGUR
                    (token stream)
 ```
 
-Each conversation is a Temporal workflow; each message is an Update on it. The `chat-worker` service runs the agent for every turn and streams its tokens through Redis, which the app relays to the browser. The browser keeps every conversation in IndexedDB (the record); the workflow keeps only the recent context. A turn survives a worker restart, and a page reloaded mid-answer picks the answer up again. Chat sessions appear in the Temporal UI as `chat-<index>-<conversation id>`.
+Each conversation is a Temporal workflow; each message is an Update on it. The `chat-worker` service runs the agent for every turn and streams its tokens through Redis, which the app relays to the browser. The browser keeps every conversation in IndexedDB (the record); the workflow keeps only the recent context. A turn survives a worker restart, and a page reloaded mid-answer picks the answer up again. Chat sessions appear in the Temporal UI as `chat-<index>-<conversation id>`. Business-impact runs are workflows too (`impact-<index>`), on the `impact-worker` service, which reads only the stored report in MongoDB.
 
 | Path | Purpose |
 | --- | --- |

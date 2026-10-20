@@ -26,6 +26,13 @@ Checked against the code before building (section 16), and decisions made while 
 - The model chooses `cost_model`; if it leaves it empty, code picks the first model that applies to the top story's category, so missing inputs always become questions. A model question that already fills a missing input replaces the template question for it.
 - `render.py` was written in M1 (the script prints the views); its golden tests are in M2.
 - The API uses `MongoStore` for reads and writes (one fake in tests) instead of raw pymongo.
+- Processes with no grounded consequence are listed as "No failure story from the code", not under "Not worth pursuing": the Temporal report rates them a fit, and saying otherwise would contradict it.
+- `finalize_impact` is merged into `synthesize_impact` (the result and the request's "ok" are written together); the fourth activity is `mark_impact_status`, used on cancellation and on a run that fails for good. Process failures reach `synthesize_impact` as `{key: error}` and are recorded there.
+- Failure messages are kept in workflow history, and a pydantic validation error quotes the model output it rejected (which can echo customer context), so the impact activities replace model-format and max-tokens messages with fixed text.
+- The stored result also keeps the context it was built with (`context`), so **Regenerate** and **New context…** in the UI can reuse it; the request keeps the process names (`names`) so progress shows them. Process names come from the code report and are the only text in workflow history besides ids.
+- The stale banner's **Regenerate** reuses cached answers (`fresh: false`), so unchanged processes cost nothing; the toolbar's **Regenerate** passes `fresh: true`, as in section 9.
+- `/check` and the run key the cache on the same model id helper, and the context hash canonicalizes `hourly_rate` (an int and the float it becomes after storage hashed differently; caught by the API test).
+- The impact tests in code_atlas are named `test_impact_*`: pytest's import mode clashes on basenames shared with the chat tests.
 
 
 This is written as a hand-off document for Claude Code. It replaces the two earlier answers where they conflict. I read the real source this time, not only the summaries.
