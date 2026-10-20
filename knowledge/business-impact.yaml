@@ -1,0 +1,144 @@
+# Business-impact mapping: how verified facts about a process (its Temporal report
+# process card) translate into business consequences, and how cost ranges are computed.
+#
+# Read by semantic_ingress/report/impact/mapping.py with its own content hash, which is
+# part of every impact cache key. Editing this file re-runs impact generation only; the
+# Temporal report (temporal-rubric.yaml, temporal-pack.yaml) is not affected.
+#
+# PLACEHOLDERS: every default_range below is a placeholder for sales leadership to
+# review. Defaults are always shown to the reader tagged "default", never as facts.
+# Everything is currency-neutral; the currency comes from the user's context.
+
+meta: {id: business-impact-map, version: 1.0.0}
+
+# Who feels a consequence (the model picks from these).
+stakeholders:
+  customers: "Customers"
+  finance: "Finance"
+  operations: "Operations"
+  on_call_engineering: "On-call engineers"
+  compliance: "Compliance"
+  data_consumers: "Teams that use the data"
+  support: "Support"
+
+# Consequence categories. `requires` decides, from the process card alone, whether a
+# category is available for a process (the model may only choose available ones).
+# `anchors` are the kinds of card fact a story in the category must cite, at least one:
+# crash_loss (what a crash loses), waits, or trigger.
+categories:
+  duplicate_or_missed_side_effect:
+    t: "Duplicate or missed side effect"
+    requires: {effects_any: [paid_call, external_call, message, irreversible, db_write], crash_loss: true}
+    anchors: [crash_loss]
+    stakeholders: [customers, finance, support]
+  lost_or_repeated_work:
+    t: "Lost or repeated work"
+    requires: {crash_loss: true}
+    anchors: [crash_loss]
+    stakeholders: [operations, on_call_engineering]
+  wasted_spend:
+    t: "Wasted paid calls or compute"
+    requires: {effects_any: [paid_call], crash_loss: true}
+    anchors: [crash_loss]
+    stakeholders: [finance, operations]
+  stuck_or_stale_work:
+    t: "Work stuck waiting or gone stale"
+    requires: {waits: true}
+    anchors: [waits, crash_loss]
+    stakeholders: [customers, operations]
+  inconsistent_state:
+    t: "Systems left out of sync"
+    requires: {distinct_effects_min: 2, crash_loss: true}
+    anchors: [crash_loss]
+    stakeholders: [data_consumers, finance, support]
+  manual_recovery:
+    t: "Manual recovery effort"
+    requires: {crash_loss: true}
+    anchors: [crash_loss]
+    stakeholders: [operations, on_call_engineering]
+  missed_or_overlapping_runs:
+    t: "Missed or overlapping scheduled runs"
+    requires: {path: PATH-SCHEDULE}
+    anchors: [trigger, crash_loss]
+    stakeholders: [operations, data_consumers]
+
+# Which categories to lead with, by the process's best value path (rubric ids).
+path_emphasis:
+  PATH-PIPELINE:    [wasted_spend, lost_or_repeated_work]
+  PATH-TRANSACTION: [duplicate_or_missed_side_effect, inconsistent_state]
+  PATH-WAIT:        [stuck_or_stale_work, manual_recovery]
+  PATH-SCHEDULE:    [missed_or_overlapping_runs, manual_recovery]
+
+# A story may be "high" severity only if one of these holds; otherwise it is lowered to medium.
+severity_rules:
+  high_requires_any_of:
+    - {cited_step_effects_any: [paid_call, irreversible]}
+    - {basis: context}         # the story cites the user's own context
+
+# What the drivers of a business case are (the model labels each driver with one).
+driver_kinds:
+  frequency: "How often it happens"
+  blast_radius: "How much one failure affects"
+  recovery_effort: "Effort to recover"
+  detection_delay: "How long until someone notices"
+  unit_cost: "Cost of one unit of work"
+
+# Cost models. A formula is a product of its inputs (code checks this). An input is
+# taken from the context (a number the context states), else from its default_range;
+# a model with an input that has neither gives no estimate, and the input becomes a
+# discovery question (`question`, asked of `ask`).
+cost_models:
+  manual_rerun_labor:
+    t: "Staff time spent rerunning or repairing"
+    applies_to: [lost_or_repeated_work, manual_recovery, stuck_or_stale_work]
+    formula: "incidents_per_month * hours_per_incident * hourly_rate"
+    inputs:
+      incidents_per_month:
+        unit: "incidents/month"
+        question: "How many times a month does this process fail or need someone to rerun or repair it?"
+        ask: operations
+      hours_per_incident:
+        unit: "hours"
+        question: "When it fails, how many staff hours does it take to notice, repair and rerun it?"
+        ask: on_call_engineering
+      hourly_rate:
+        unit: "currency/hour"
+        default_range: [50, 120]     # PLACEHOLDER: loaded staff cost per hour; sales leadership to review
+        question: "What loaded hourly cost should we use for the people who do this recovery work?"
+        ask: finance
+  wasted_spend:
+    t: "Paid calls or compute repeated after a failure"
+    applies_to: [wasted_spend]
+    formula: "failed_runs_per_month * cost_per_run * share_repeated"
+    inputs:
+      failed_runs_per_month:
+        unit: "runs/month"
+        question: "How many runs a month fail partway through and are started again?"
+        ask: operations
+      cost_per_run:
+        unit: "currency/run"
+        question: "What does one full run cost in paid API calls or compute?"
+        ask: finance
+      share_repeated:
+        unit: "fraction"
+        default_range: [0.3, 0.8]    # PLACEHOLDER: share of a run's paid work repeated on restart
+        question: "When a run restarts, how much of its paid work is done again?"
+        ask: on_call_engineering
+  duplicate_side_effect:
+    t: "Duplicate or unrecovered side effects"
+    applies_to: [duplicate_or_missed_side_effect, inconsistent_state]
+    formula: "incidents_per_month * value_per_incident * share_unrecovered"
+    inputs:
+      incidents_per_month:
+        unit: "incidents/month"
+        question: "How many times a month does a failure leave a duplicate, missed or half-done side effect?"
+        ask: operations
+      value_per_incident:
+        unit: "currency/incident"
+        question: "What does one duplicate or missed side effect cost (refunds, credits, penalties, staff time)?"
+        ask: finance
+      share_unrecovered:
+        unit: "fraction"
+        default_range: [0.1, 0.5]    # PLACEHOLDER: share of such incidents never fully recovered
+        question: "Of those incidents, how many are never fully put right?"
+        ask: support

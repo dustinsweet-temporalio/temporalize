@@ -1,4 +1,32 @@
-I'll read the actual code first, so the guide uses real function names and hook points instead of the summary-level guesses from before.Next I'm reading the key source files, so the guide matches real signatures.I need to see the Temporal sync side, the LLM client, the compose layout and the front-end report viewer before I settle where an on-demand job should run.I'll check the worker and config, because they decide where the new job can run.I'll read the last pieces: the chat worker, the report endpoints, the UI report view, and the Dockerfile.I need the rubric's value-path IDs for the consequence mapping. I'll also check the known limitations and the prompt conventions.One more read: the validate-and-retry pattern in `writeup.py`, the store's report methods, and the LLM client's call signature. The guide has to match all three exactly.I'll confirm one Temporal behavior before I commit to it in the spec: how workflow ID conflict policies work for the "one run at a time per index" rule.# Business-impact translation: design requirements and implementation guide
+# Business-impact translation: design requirements and implementation guide
+
+## Verification notes (implementation)
+
+Checked against the code before building (section 16), and decisions made while building. Where the code differed, the design was adapted; the sections below are kept as written.
+
+**Confirmed**
+- `card_facts(card)` returns 6-tuples `(fact id, field, list index or None, label, text, refs)` (its type hint says 5). Crash-loss facts have `field == "crash_loss"`; step facts have `field == "steps"` and their index gives the step's `effects`. `card_text` prints the same F numbering.
+- `MongoStore.get_report`/`put_report` use `_get_one`/`_put_one` (`replace_one(..., upsert=True)`) on `reports` with `_id = f"{repo_id}::temporal_report"`; `get_cached`/`put_cached` do the same on `report_cache`. The new methods follow this.
+- `core/llm_schema.py` strips numeric and length constraints only: floats, nested lists of objects and `Literal` enums are fine, so `CostInput.low/high` are floats.
+- `LLMClient.generate(prompt, response_model, max_retries=3, system=None, enforce_schema=False)` returns `(model, LLMUsage)`. Temporal activities build it with `internal_retries=False` (one attempt; errors classified for the retry policy), as the sync worker does.
+- `LLMConfig()` is a frozen dataclass with environment defaults and takes no arguments (`INDEX_MODEL`, `INDEX_EFFORT`, prices). Impact uses it as the report does.
+- `web/index.html`: the report toolbar is `#report-actions` with a `.seg` group (`#report-summary`, `#report-detailed`), `#report-download`, and `#report-toggle`; the view is `#report-view`.
+- `Rubric.overall` returns `fit, best_path, weighted, overall, gate_capped, verdict_class, suitable, design`; a stored process also has `card, low_confidence, bars, gates, verdict, design` (None when not suitable), `reasons, would_change, moved`. Value-path titles are in `data.conversion.paths`.
+- Test fakes: `tests/test_report.py` fakes the store (`get_cached`/`put_cached`) and the model (`generate(prompt, response_model, system, enforce_schema)`); Temporal tests use a session-scoped `WorkflowEnvironment.start_time_skipping()`; the chat API tests swap the app's Temporal client for a fake.
+
+**Differed, and what was done**
+- D1: `reset_repository` (a full re-index) drops only the summaries and `index_meta`, not `reports`, so the impact document survives a re-index. The stale flag (the report's `generated_at`/`commit_sha` against `source_report`) covers it. Deleting the index (`drop_database`) does remove it.
+- `LLM_RETRY`'s non-retryable types are `LLM_PERMANENT` and `FILE_UNREADABLE`, not `INVALID_OPTIONS`. The impact retry policy uses `LLM_PERMANENT` plus its own `IMPACT_INVALID` (missing request or report).
+- V2 contradicts the wait and schedule categories, which do not require crash loss. Each category now lists `anchors` in the YAML (the fact kinds a story must cite: `crash_loss`, `waits`, `trigger`); a story led by a wait or trigger fact may have an empty `stage`.
+- D4 is enforced in code: a context-supplied cost input must equal a number the cited C item states (`40k` = 40000, `30%` = 0.3). "~40k payouts/day" cannot become "failed runs per month", because that is arithmetic; it becomes a discovery question.
+- A suitable or borderline process whose card shows no crash loss, waits or schedule gets no model call (skipped as "no grounded consequence"), like `not suitable` processes.
+- The cache holds the model's raw answer; the checks run again on every read, so a validator change applies without model calls and the dropped list is reproducible.
+- Prerequisite errors are 422 (no report; a `full`-status report), per the milestone list. A report whose last rebuild failed but kept its data is translated (the data is the last good report).
+- `ImpactContext` is a frozen Pydantic model (caps as `max_length`, so the API rejects oversize context with 422). `hourly_rate` uses 0 as "not given" instead of None. The context hash excludes `audience` (the default tab), so switching tabs never re-runs the model.
+- The model chooses `cost_model`; if it leaves it empty, code picks the first model that applies to the top story's category, so missing inputs always become questions. A model question that already fills a missing input replaces the template question for it.
+- `render.py` was written in M1 (the script prints the views); its golden tests are in M2.
+- The API uses `MongoStore` for reads and writes (one fake in tests) instead of raw pymongo.
+
 
 This is written as a hand-off document for Claude Code. It replaces the two earlier answers where they conflict. I read the real source this time, not only the summaries.
 
