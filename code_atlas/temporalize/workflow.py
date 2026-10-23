@@ -2,8 +2,10 @@
 TemporalizeWorkflow: one Temporalize run (workflow id tz-<run>), screens 5 to 7.
 
     wait for the index and the Temporal report (the sync-<index> workflow)
-    -> analyze scope -> wait for scope_confirmed (the user, screen 5)
-    -> draft the plan -> wait for plan_approved (the user, screen 6)
+    -> analyze scope: recommendation, systems, variants
+    -> wait for scope_confirmed (the user picks the process, focus and criteria: screens 3-5)
+    -> draft the plan and the design -> wait for plan_approved (the user, screen 6),
+       revising the design for each design_edit_requested on the way
     -> prepare the workspace -> generate -> checks (fix, re-check)
     -> review passes, at most MAX_REVIEW_PASSES (fix between passes)
     -> scenarios: side by side, resilience, replay, smoke (fix and re-run on failure)
@@ -39,6 +41,8 @@ class TemporalizeWorkflow:
         self._phase = "STARTING"
         self._scope = False
         self._approved = False
+        self._edits = 0          # design edit requests signalled
+        self._edits_done = 0     # handled
 
     @workflow.signal(name=C.SCOPE_SIGNAL)
     def scope_confirmed(self) -> None:
@@ -47,6 +51,10 @@ class TemporalizeWorkflow:
     @workflow.signal(name=C.PLAN_SIGNAL)
     def plan_approved(self) -> None:
         self._approved = True
+
+    @workflow.signal(name=C.DESIGN_EDIT_SIGNAL)
+    def design_edit_requested(self) -> None:
+        self._edits += 1
 
     @workflow.query(name=C.PROGRESS_QUERY)
     def progress(self) -> str:
@@ -92,7 +100,18 @@ class TemporalizeWorkflow:
                 self._phase = "PLAN"
                 await self._step(C.DRAFT_PLAN, RunInput(rid), C.MODEL_STEP_TIMEOUT, C.LLM_RETRY, heartbeat=True)
             self._phase = "WAIT_APPROVAL"
-            await workflow.wait_condition(lambda: self._approved)
+            while True:
+                await workflow.wait_condition(lambda: self._approved or self._edits > self._edits_done)
+                if self._approved:
+                    break
+                self._edits_done = self._edits   # requests made while revising are folded into the next one
+                self._phase = "REVISE_DESIGN"
+                try:
+                    await self._step(C.REVISE_DESIGN, RunInput(rid), C.MODEL_STEP_TIMEOUT, C.LLM_RETRY, heartbeat=True)
+                except ActivityError as e:   # a failed edit leaves the design as it was; the run goes on
+                    await workflow.execute_activity(C.MARK_DESIGN_EDIT, MarkInput(rid, "failed", error_text(e)),
+                                                    start_to_close_timeout=C.LOCAL_TIMEOUT, retry_policy=C.LOCAL_RETRY)
+                self._phase = "WAIT_APPROVAL"
 
             self._phase = "GENERATE"
             await self._step(C.PREPARE_WORKSPACE, RunInput(rid), C.LOCAL_TIMEOUT)
@@ -129,7 +148,7 @@ class TemporalizeWorkflow:
                                      heartbeat=True)
 
             self._phase = "RESULTS"
-            await self._step(C.FINALIZE_RESULTS, RunInput(rid), C.LOCAL_TIMEOUT)
+            await self._step(C.FINALIZE_RESULTS, RunInput(rid), C.MODEL_STEP_TIMEOUT, heartbeat=True)
             self._phase = "DONE"
             return "done"
         except asyncio.CancelledError:

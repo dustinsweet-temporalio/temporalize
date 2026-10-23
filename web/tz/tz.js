@@ -10,10 +10,11 @@
 (function () {
   "use strict";
 
-  const STEPS = ["Setup", "What we found", "Focus", "Success", "Report and scope",
+  const STEPS = ["Setup", "What we found", "Atlas recommendation", "Focus", "Success",
     "Behavior and design", "Generate and validate", "Results"];
   const BUSY = ["scanning", "assessing", "planning", "generating"];
-  const EDITABLE_EARLY = ["scanning", "scan_failed", "ready"];   // screens 1-4 editable only then
+  const EDITABLE_EARLY = ["scanning", "scan_failed", "ready"];   // screens 1-2 editable only then
+  const PICKING = ["scoping", "not_suitable"];                    // screens 3-5: after the report, before the plan
   const POLL_MS = 1500;
   const MAX_FOCUS = 2;
 
@@ -124,19 +125,20 @@
     if (!run) return false;
     if (BUSY.includes(run.status)) return true;
     if (run.plan && run.plan.status === "drafting") return true;
+    if (run.plan && run.plan.design_edit && ["pending", "revising"].includes(run.plan.design_edit.status)) return true;
     const groups = [run.checks, run.assessment && run.assessment.stages, run.generate && run.generate.stages];
     if (run.status === "done" || run.status === "failed" || run.status === "stopped") return false;
     return groups.some((g) => (g || []).some((s) => s.state === "running"));
   }
   function earlyEditable(run) { return !run || EDITABLE_EARLY.includes(run.status); }
+  function pickEditable(run) { return !!run && PICKING.includes(run.status) && !(run.scope && run.scope.confirmed); }
   function allowedStep(run) {
     if (!run) return 1;
     let s = run.step || 1;
     const st = run.status;
     s = Math.max(s, 2);   // a run exists once setup is done
-    if (st === "ready" && run.scan) s = Math.max(s, 3);
-    if (run.brief && run.scan) s = Math.max(s, 4);
-    if (["assessing", "scoping", "not_suitable"].includes(st)) s = Math.max(s, 5);
+    if (["assessing", "scoping", "not_suitable"].includes(st) || (run.assessment && run.assessment.started_at)) s = Math.max(s, 3);
+    if (run.scope && run.scope.picked) s = Math.max(s, 4);
     if (["planning", "plan_ready"].includes(st)) s = Math.max(s, 6);
     if (st === "generating" || (run.generate && run.generate.started_at)) s = Math.max(s, 7);
     if (st === "done" && run.results) s = Math.max(s, 8);
@@ -387,43 +389,43 @@
 
   const LEDES = [
     "Every setting the run needs, entered once before any code is read. The API key comes first, because nothing later works without it.",
-    "The results of the local scan, for you to check before anything is sent. Plain code only, a few seconds total.",
-    "Pick what the POC should show, not what’s broken. Anything the code can answer, like how often it runs, isn’t asked here.",
-    "A short list of criteria picked by simple rules from the scan and the goal. Every suggestion says why it’s there. P0 and P1 match the Mutual Action Plan template.",
-    "Code Atlas indexes the repository and builds its Temporal report, then lists the processes it found. The process you named comes first, with every way the code runs it.",
-    "The plan the POC is built from, pre-filled from the code: what it does today, fixes worth making, the test data both versions run on, and the design. Change only what looks wrong.",
+    "What a quick read of the repository found: its size, tests, possible secrets, and how it runs today. Check it, leave out what shouldn’t be assessed, then start the assessment.",
+    "Code Atlas indexes the repository, builds its Temporal report, and recommends where a POC pays off. You pick the process to build, with the systems it really talks to.",
+    "Now that you know which process, pick what the POC should show. Anything the code can answer, like how often it runs, isn’t asked here.",
+    "A short list of criteria picked from Code Atlas’s findings and your focus. Every suggestion says why it’s there. P0 and P1 match the Mutual Action Plan template.",
+    "The plan the POC is built from, pre-filled from the code and designed with Temporal’s developer skill and docs. Read the summary, open any part to check it, and change only what looks wrong.",
     "Progress only, nothing to edit. Every loop is visible: how many review passes ran, what each found, and what was fixed.",
-    "What this run proved, the side-by-side comparison, and everything an SA needs to review: diff, scorecard, the test data, and limitations.",
+    "What this run proved, written up as the review packet: the use case, scorecard, side by side, what changed, the POC standard, test data and limits.",
   ];
 
   const NOTES = [
     [["Editable", ["Anthropic API key, checked as soon as it’s pasted, and model", "Temporal target: local, or Cloud address, namespace and API key", "Repository: a local folder or a git URL with branch", "A read-only token, only when the repo is private"]],
       ["Return visits", "Once saved, the key, model and Temporal target fold into one line with “Change”, so only the repository is asked."],
       ["Model calls", "zero"]],
-    [["Visible", ["File, line, test and secret counts", "Detected tools and integrations", "How the code runs today, including what wasn’t found"]],
+    [["Visible", ["File, line, test and secret counts", "How the code runs today, including what wasn’t found"]],
       ["Editable", ["Folders and file patterns to leave out"]],
       ["Model calls", "zero"],
-      ["If a step fails", "The line turns red with what went wrong and how to fix it. “Try again” reruns the checklist."]],
-    [["Editable", ["Mode: a process in mind, or let Code Atlas find opportunities", "Which process", "One or two focus areas", "Pasted notes", "Import or export a brief file"]],
+      ["The one button", "“Start assessment” sends the source to Code Atlas’s model. The systems the code talks to are named from its findings on the next screen."]],
+    [["Visible", ["Indexing, live: files and folders done", "Code Atlas’s recommendation and the verdict for every process", "The systems the code talks to, named from the source", "What a crash loses today, and every way the code runs each process"]],
+      ["Editable", ["Which process to build", "Each way it runs, each step, and each failure to address: in or out", "Notes on anything else about scope"]],
+      ["Model calls", { calls: "Counted live in the strip" }],
+      ["Gates", "“Not suitable” can’t be picked. “Borderline” asks you to confirm."]],
+    [["Editable", ["One or two focus areas, with what was found for each", "Notes from the Opportunity or calls", "Import or export a brief file"]],
       ["Model calls", "zero"],
-      ["What isn’t asked", "How often it runs, how it’s triggered, and how much it handles all come from the code on screen 5."]],
+      ["What isn’t asked", "How often it runs, how it’s triggered, and how much it handles all come from the code."]],
     [["Editable", ["Each criterion on or off", "P0 or P1 for each", "Custom criteria"]],
       ["Visible", ["Why each one was suggested", "What this run can’t prove"]],
       ["Model calls", "zero"],
-      ["The one button", "“Start assessment” is the first point where anything leaves the machine, and it says so right beside it."]],
-    [["Editable", ["Which process to build", "Each way it runs, each step, and each failure to address: in or out", "Notes on anything else about scope"]],
-      ["Visible", ["Verdict and fit score for every process", "What a crash loses today", "Every way the code runs the process, read from the code", "Anything in your notes the code contradicts"]],
-      ["Model calls", { calls: "Counted live in the strip" }],
-      ["Gates", "“Not suitable” stops here with reasons. “Borderline” asks you to confirm."]],
-    [["Editable", ["Drop or reword a behavior the POC must keep", "Include or skip each fix", "Test data files"]],
-      ["Defaults", "Every behavior is kept and every fix included until you say otherwise. The ones the code checks were less sure about come first."],
-      ["Model calls", { calls: "Drafting claims and design" }],
-      ["Why the test data is here", "Both versions run on exactly this data on screen 7, so the original code becomes the answer key."]],
+      ["The one button", "“Confirm and draft the plan” sends the brief and notes with the code facts to draft the plan."]],
+    [["Visible", ["A plain-language summary of the plan", "What the code does today and the fixes, each told in a sentence or two, with the details folded", "The design, its decisions and what they rest on"]],
+      ["Editable", ["Drop or reword a behavior the POC must keep", "Include or skip each fix", "Test data: included or not", "The design: describe changes and “Make edits”"]],
+      ["Model calls", { calls: "Plan, design, and each design edit" }],
+      ["How the design is made", "From Code Atlas’s design, by a model that reads Temporal’s developer skill and searches the Temporal docs, and cites them."]],
     [["Visible", ["Each stage as it runs, and how long the run has taken", "Review passes, with findings per pass", "A Temporal UI link once the smoke run starts"]],
       ["Editable", "Nothing. You can leave and come back, since the run is itself a Temporal workflow."],
       ["Model calls", { calls: "Writing and revising" }],
       ["Loop limit", "Review and revise stops at three passes. Anything left over is listed in the results."]],
-    [["Visible", ["Which of the three outcomes this run proved", "Side-by-side comparison, with intended fixes and new behavior labeled", "Scorecard, diff, evidence, limitations", "The test data, labeled as synthetic"]],
+    [["Visible", ["Which of the three outcomes this run proved", "The use case, scorecard and side-by-side comparison", "What changed, the POC standard, the test data, limits and next steps"]],
       ["Actions", ["Export the review packet", "Push the branch to the customer’s GitHub", "Open the workflow in the Temporal UI"]],
       ["Model calls", "zero"]],
   ];
@@ -735,8 +737,8 @@
     if (loading) {
       const failed = run.status === "scan_failed" || (run.checks || []).some((c) => c.state === "failed");
       return h("div", null,
-        h("h3", null, "Checking your setup and scanning locally"),
-        h("p", { class: "hint" }, "Nothing leaves your machine during this step."),
+        h("h3", null, "Checking your setup and scanning the repository"),
+        h("p", { class: "hint" }, "A quick read of the files: counts, tests, secrets and how it runs today."),
         checklist(run.checks),
         failed && run.error ? h("div", { class: "errbox" }, run.error) : null,
         errorBox(),
@@ -752,7 +754,7 @@
     return h("div", null,
       readOnlyNote(run),
       h("h3", null, "Here’s what we found"),
-      h("p", { class: "hint" }, "From the local scan. Nothing has been sent to a model."),
+      h("p", { class: "hint" }, "From a quick read of the repository. The systems it talks to are named by Code Atlas on the next screen."),
       h("div", { class: "mets", style: "margin-top:12px" },
         met(fmtInt(sc.python_files || sc.files || 0), filesLabel),
         met(approx(sc.lines), "Lines"),
@@ -764,10 +766,6 @@
           h("li", null, h("code", null, `${f.path}:${f.line}`), ` ${f.type || ""}`)))) : null,
       (sc.languages || []).length > 1 ? h("p", { class: "hint", style: "margin-top:6px" },
         sc.languages.map((l) => `${l.name} ${fmtInt(l.files)}`).join(" · ")) : null,
-      h("div", { class: "lbl" }, "Tools and integrations"),
-      (sc.integrations || []).length
-        ? h("div", { class: "tags" }, sc.integrations.map((i) => h("span", { class: "tag", title: (i.files || []).join(", ") }, i.name)))
-        : h("p", { class: "empty" }, "None detected from imports."),
       h("div", { class: "lbl" }, "How it runs today"),
       (sc.runs_today || []).length
         ? h("div", { class: "tags" }, sc.runs_today.map((r) => h("span", { class: "tag", title: (r.evidence || []).join(", ") }, r.name)))
@@ -780,7 +778,11 @@
       errorBox(),
       h("div", { class: "btns" },
         h("button", { type: "button", class: "btn", onclick: () => go(1) }, "Back"),
-        h("button", { type: "button", class: "btn pri", onclick: () => go(3) }, "Continue")));
+        editable ? h("span", { class: "r", style: "align-items:center" },
+          h("span", { class: "note-go" }, "Next, the source is sent to Anthropic for Code Atlas’s assessment."),
+          h("button", { type: "button", class: "btn go", disabled: ui.busy, onclick: startAssessment },
+            ui.busy ? "Starting…" : "Start assessment"))
+          : h("button", { type: "button", class: "btn pri", onclick: () => go(3) }, "Continue")));
   }
   function met(value, label, warn) {
     return h("div", { class: "met" + (warn ? " warn" : "") }, h("b", null, value), h("span", null, label));
@@ -816,23 +818,19 @@
   function screenFocus(run) {
     if (!ui.focus || ui.focusFor !== runId(run)) {
       const b = run.brief || {};
-      ui.focus = { mode: b.mode || "process", process: b.process || "", focus: [...(b.focus || [])], notes: b.notes || "" };
+      ui.focus = { mode: "process", process: "", focus: [...(b.focus || [])], notes: b.notes || "" };
       ui.focusFor = runId(run);
     }
     const f = ui.focus;
-    const editable = earlyEditable(run);
+    const editable = pickEditable(run);
     const options = run.focus_options || [];
+    const sc = run.scope || {};
+    const proc = (sc.processes || []).find((p) => p.key === sc.selected);
+    if (proc) f.process = proc.name;
     return h("div", null,
-      readOnlyNote(run),
+      editable ? null : h("p", { class: "ro" }, sc.confirmed ? "The scope is confirmed, so this screen is read-only." : "Read-only."),
       h("h3", null, "What should this POC focus on?"),
-      h("div", { style: "margin-top:10px" },
-        seg([["process", "I have a process in mind"], ["discover", "Find opportunities for me"]], f.mode,
-          (v) => { f.mode = v; render(); }, "Mode", !editable)),
-      f.mode === "process" ? h("div", null,
-        h("label", { class: "lbl", for: "tz-proc" }, "Which process?"),
-        h("input", { class: "field", id: "tz-proc", placeholder: "For example: the morning timesheet audit", value: f.process,
-          readOnly: !editable, oninput: (e) => { f.process = e.target.value; } }))
-        : h("p", { class: "hint", style: "margin-top:8px" }, "Code Atlas ranks every process it finds; the strongest fit comes first on screen 5."),
+      proc ? h("p", { class: "hint" }, "For ", h("b", null, proc.name), ", the process you picked from Code Atlas’s recommendation.") : null,
       h("div", { class: "lbl" }, `Focus, pick one or two`),
       options.length ? h("div", { class: "opts" }, options.map((o) => {
         const on = f.focus.includes(o.id);
@@ -844,10 +842,10 @@
             else { f.focus.push(o.id); if (f.focus.length > MAX_FOCUS) f.focus.shift(); }
             render();
           },
-        }, h("b", null, o.title), h("span", null, o.hint || (o.supported === false ? "Not seen in the scan" : "")));
-      })) : h("p", { class: "empty" }, "No focus options yet."),
+        }, h("b", null, o.title), h("span", null, o.hint || (o.supported === false ? "Not seen in the assessment" : "")));
+      })) : h("p", { class: "empty" }, "Pick the process on screen 3 first."),
       h("label", { class: "lbl", for: "tz-notes" }, "Notes from the Opportunity or calls, optional"),
-      (() => { const t = h("textarea", { class: "field", id: "tz-notes", placeholder: "Paste anything useful", readOnly: !editable,
+      (() => { const t = h("textarea", { class: "field", id: "tz-notes", placeholder: "Paste anything useful. Code Atlas checks it against the code.", readOnly: !editable,
         oninput: (e) => { f.notes = e.target.value; } }); t.value = f.notes; return t; })(),
       h("p", { class: "hint", style: "margin-top:8px;display:flex;gap:14px;flex-wrap:wrap" },
         h("a", { class: "lnk", href: `/api/tz/runs/${enc(runId(run))}/brief.json`, download: `brief-${runId(run)}.json` }, "Export brief"),
@@ -856,7 +854,7 @@
         ui.importedCriteria ? h("span", null, `Imported, with ${plural(ui.importedCriteria.length, "criterion", "criteria")}.`) : null),
       errorBox(),
       h("div", { class: "btns" },
-        h("button", { type: "button", class: "btn", onclick: () => go(2) }, "Back"),
+        h("button", { type: "button", class: "btn", onclick: () => go(3) }, "Back"),
         h("button", { type: "button", class: "btn pri", disabled: ui.busy || (editable && !f.focus.length), title: f.focus.length ? null : "Pick at least one focus area",
           onclick: focusContinue }, "Continue")));
   }
@@ -867,7 +865,7 @@
     try {
       const data = JSON.parse(await file.text());
       const b = data.brief || data;
-      ui.focus = { mode: b.mode === "discover" ? "discover" : "process", process: b.process || "", focus: (b.focus || []).slice(0, MAX_FOCUS), notes: b.notes || "" };
+      ui.focus = { mode: "process", process: ui.focus ? ui.focus.process : "", focus: (b.focus || []).slice(0, MAX_FOCUS), notes: b.notes || "" };
       ui.importedCriteria = Array.isArray(data.criteria) ? data.criteria : null;
       ui.error = null;
     } catch (err) { ui.error = `That file is not a brief: ${err.message}`; }
@@ -876,7 +874,7 @@
 
   async function focusContinue() {
     const run = state.run;
-    if (!earlyEditable(run)) return go(4);
+    if (!pickEditable(run)) return go(5);
     const ok = await act(async () => {
       let out = asRun(await api(`/api/tz/runs/${enc(state.runId)}/brief`, { method: "PUT", body: ui.focus }));
       if (ui.importedCriteria) {
@@ -886,7 +884,7 @@
       ui.criteria = null;   // take the refreshed suggestions
       return out;
     });
-    if (ok) go(4);
+    if (ok) go(5);
   }
 
   // ------------------------------------------------------------------
@@ -895,7 +893,7 @@
 
   const saveCriteriaSoon = debounce(() => saveCriteria().catch((e) => banner(`Could not save the criteria: ${e.message}`)), 500);
   async function saveCriteria() {
-    if (!ui.criteria || !earlyEditable(state.run)) return;
+    if (!ui.criteria || !pickEditable(state.run)) return;
     const out = asRun(await api(`/api/tz/runs/${enc(state.runId)}/criteria`, { method: "PUT", body: { criteria: ui.criteria } }));
     if (out && (out.id || out._id)) { state.run = out; }
   }
@@ -905,11 +903,11 @@
       ui.criteria = (run.criteria || []).map((c) => ({ ...c }));
       ui.criteriaFor = runId(run);
     }
-    const editable = earlyEditable(run);
+    const editable = pickEditable(run);
     const list = ui.criteria;
     const change = () => { saveCriteriaSoon(); render(); };
     return h("div", null,
-      readOnlyNote(run),
+      editable ? null : h("p", { class: "ro" }, "The scope is confirmed, so this screen is read-only."),
       h("h3", null, "What does success look like?"),
       h("p", { class: "hint" }, "P0 is required, P1 is nice to have. Click P0 or P1 to switch."),
       h("div", { style: "margin-top:8px" },
@@ -936,12 +934,12 @@
       h("p", { class: "hint", style: "margin-top:8px" }, "Not proven by a local run: scale, latency, and cost."),
       errorBox(),
       h("div", { class: "btns" },
-        h("button", { type: "button", class: "btn", onclick: () => go(3) }, "Back"),
+        h("button", { type: "button", class: "btn", onclick: () => go(4) }, "Back"),
         editable ? h("span", { class: "r", style: "align-items:center" },
-          h("span", { class: "note-go" }, "Next, source files are sent to Anthropic for the assessment."),
+          h("span", { class: "note-go" }, "Next, the plan is drafted from the code, your focus and notes."),
           h("button", { type: "button", class: "btn go", disabled: ui.busy || !list.some((c) => c.on !== false),
-            onclick: startAssessment }, ui.busy ? "Starting…" : "Start assessment"))
-          : h("button", { type: "button", class: "btn pri", onclick: () => go(5) }, "Continue")));
+            onclick: confirmScope }, ui.busy ? "Confirming…" : "Confirm and draft the plan"))
+          : (allowedStep(run) >= 6 ? h("button", { type: "button", class: "btn pri", onclick: () => go(6) }, "Continue") : null)));
   }
   function addCriterion() {
     const text = ui.newCrit.text.trim();
@@ -953,11 +951,15 @@
     render();
   }
   async function startAssessment() {
+    const ok = await act(async () => asRun(await api(`/api/tz/runs/${enc(state.runId)}/start`, { method: "POST", body: {} })));
+    if (ok) go(3);
+  }
+  async function confirmScope() {
     const ok = await act(async () => {
       await saveCriteria();
-      return asRun(await api(`/api/tz/runs/${enc(state.runId)}/start`, { method: "POST", body: {} }));
+      return asRun(await api(`/api/tz/runs/${enc(state.runId)}/scope`, { method: "POST" }));
     });
-    if (ok) go(5);
+    if (ok) go(6);
   }
 
   // ------------------------------------------------------------------
@@ -1005,14 +1007,26 @@
       running ? h("p", { class: "hint", style: "margin:4px 0 0" }, "Each process is read from the source, scored against the rubric, and given a design. A few minutes in all; finished steps are cached, so a re-run is quick.") : null);
   }
 
-  function screenScope(run) {
+  function indexCounts(run) {
+    // Files and folders summarized so far, live from the index sync (refreshed every few seconds).
+    const ix = run.assessment && run.assessment.index;
+    if (!ix) return null;
+    const pair = (done, total) => (typeof total === "number" ? `${fmtInt(done || 0)} of ${fmtInt(total)}` : "after the files");
+    const live = ix.phase !== "done" && run.status === "assessing";
+    return h("div", { class: "mets live", "aria-live": "polite", style: "margin:4px 0 8px" },
+      met(pair(ix.files_done, ix.files_total), live && ix.phase === "files" ? "Files, summarizing now" : "Files summarized"),
+      met(pair(ix.folders_done, ix.folders_total), live && ix.phase === "folders" ? "Folders, summarizing now" : "Folders summarized"),
+      ix.mode === "incremental" && ix.unchanged ? met(fmtInt(ix.unchanged), "Unchanged, reused") : null);
+  }
+
+  function screenRecommend(run) {
     const sc = run.scope || {};
     const procs = sc.processes || [];
     const stages = (run.assessment && run.assessment.stages) || [];
     const links = h("p", { class: "hint", style: "margin-top:6px;display:flex;gap:14px;flex-wrap:wrap" },
       run.links && run.links.temporal_ui ? h("a", { class: "lnk", href: run.links.temporal_ui, target: "_blank", rel: "noopener" }, "Watch it in Temporal UI ↗") : null,
       h("a", { class: "lnk", href: (run.links && run.links.atlas) || "/atlas", target: "_blank", rel: "noopener" }, "Open in Code Atlas ↗"));
-    const head = h("div", null, checklist(stages, { style: "margin:0 0 6px" }), reportProgress(run, stages), links);
+    const head = h("div", null, checklist(stages, { style: "margin:0 0 6px" }), indexCounts(run), reportProgress(run, stages), links);
 
     if (!procs.length) {
       const failed = run.status === "failed" || stages.some((s) => s.state === "failed");
@@ -1020,15 +1034,15 @@
         failed ? (retryBox(run, "The assessment failed.") || h("div", { class: "errbox" }, run.error || "The assessment failed.")) :
           (run.assessment && run.assessment.report) ? null : h("div", { class: "loading-line" }, h("span", { class: "spin" }, "◌"),
             run.status === "assessing" ? "Code Atlas is indexing the repository and building its Temporal report. This takes a few minutes." : "Waiting for the assessment…"),
-        h("div", { class: "btns" }, h("button", { type: "button", class: "btn", onclick: () => go(4) }, "Back")));
+        h("div", { class: "btns" }, h("button", { type: "button", class: "btn", onclick: () => go(2) }, "Back")));
     }
 
     // What the user has checked in, per process: variants, steps, failures to address; plus scope notes.
     const itemsOf = (p) => {
-      const confirmed = p.key === sc.selected && sc.confirmed;
-      const variants = p.key === sc.selected ? (sc.variants || []) : (p.variants || []);
-      const steps = confirmed && sc.steps ? sc.steps : (p.steps || []);
-      const risks = confirmed && sc.risks ? sc.risks : (p.risks || []);
+      const saved = p.key === sc.selected && sc.picked;
+      const variants = saved ? (sc.variants || []) : (p.variants || (p.key === sc.selected ? sc.variants : []) || []);
+      const steps = saved && sc.steps ? sc.steps : (p.steps || []);
+      const risks = saved && sc.risks ? sc.risks : (p.risks || []);
       return { variants, steps, risks };
     };
     const checkedIds = (list) => new Set(list.filter((x) => x.included !== false).map((x) => x.id));
@@ -1042,7 +1056,7 @@
       ui.scopeFor = runId(run);
     }
     const u = ui.scope;
-    const locked = !!sc.confirmed || !["scoping", "not_suitable"].includes(run.status);
+    const locked = !pickEditable(run);
     const sel = procs.find((p) => p.key === u.selected) || procs[0];
     const others = procs.filter((p) => p !== sel);
     const { variants, steps, risks } = itemsOf(sel);
@@ -1073,20 +1087,23 @@
         placeholder: "For example: leave email sending real but stub ClockShark; the payroll run matters most to the customer.",
         value: u.notes, oninput: (e) => { u.notes = e.target.value; } }));
 
+    const systems = sc.systems || [];
     return h("div", null, head,
       locked ? h("p", { class: "ro" }, sc.confirmed ? "Scope confirmed. The plan is built from it on screen 6." : "Read-only.") : null,
+      sc.recommendation ? h("div", { class: "rec" }, h("b", null, "Code Atlas recommends"), h("p", null, sc.recommendation)) : null,
+      systems.length ? h("div", null, h("div", { class: "lbl" }, "Systems it talks to, found in the code"),
+        h("div", { class: "tags" }, systems.map((x) => h("span", { class: "tag", title: [x.via, ...(x.refs || [])].filter(Boolean).join(" · ") },
+          x.name, x.via ? h("span", { class: "via" }, ` · ${x.via}`) : null)))) : null,
+      h("div", { class: "lbl" }, "The process to build"),
       h("div", { class: "proc main" },
         h("div", { class: "t" }, sel.name, h("span", { class: "verdict " + v.cls }, v.text)),
-        sel.matches_brief ? h("span", { class: "match" }, "Matches your brief") : null,
+        sel.recommended ? h("span", { class: "match" }, "Recommended") : null,
         sel.summary ? h("p", null, sel.summary) : null,
         sel.crash_loss ? h("p", null, h("b", null, "Today: "), sel.crash_loss) : null,
         sel.entry ? h("p", { class: "hint" }, "Entry ", h("code", null, sel.entry)) : null),
       notSuitable ? h("div", { class: "gate" }, h("b", null, "Not suitable, so a POC isn’t built for it."),
         (sel.reasons || []).length ? h("ul", null, sel.reasons.map((r) => h("li", null, typeof r === "string" ? r : r.text))) : null,
         others.some((p) => verdictLabel(p).kind !== "Not suitable") ? h("p", { style: "margin:4px 0 0" }, "Pick another process below.") : null) : null,
-      (sc.contradictions || []).length ? h("div", { class: "conf" }, h("b", null, "Your notes and the code disagree"),
-        h("ul", null, sc.contradictions.map((c) => h("li", null, `You noted: “${c.note}”. The code: ${c.code}`,
-          (c.refs || []).length ? h("span", { class: "hint" }, " ", h("code", null, c.refs.join(", "))) : null)))) : null,
       others.length ? h("div", { class: "lbl" }, "Other opportunities") : null,
       others.map((p) => {
         const pv = verdictLabel(p);
@@ -1104,8 +1121,8 @@
         h("span", null, "This process is borderline. Build the POC anyway.")) : null,
       errorBox(),
       h("div", { class: "btns" },
-        h("button", { type: "button", class: "btn", onclick: () => go(4) }, "Back"),
-        locked ? (allowedStep(run) >= 6 ? h("button", { type: "button", class: "btn pri", onclick: () => go(6) }, "Continue") : null)
+        h("button", { type: "button", class: "btn", onclick: () => go(2) }, "Back"),
+        locked ? (allowedStep(run) >= 4 ? h("button", { type: "button", class: "btn pri", onclick: () => go(4) }, "Continue") : null)
           : h("button", { type: "button", class: "btn pri", disabled: ui.busy || notSuitable || (borderline && !u.borderline) ||
               (variants.length > 0 && u.variants.size === 0) || (steps.length > 0 && u.steps.size === 0),
             onclick: async () => {
@@ -1117,9 +1134,9 @@
                 notes: u.notes,
                 borderline_confirmed: borderline ? u.borderline : false,
               };
-              const ok = await act(() => api(`/api/tz/runs/${enc(state.runId)}/scope`, { method: "POST", body }));
-              if (ok) go(6);
-            } }, "Confirm scope")));
+              const ok = await act(() => api(`/api/tz/runs/${enc(state.runId)}/selection`, { method: "PUT", body }));
+              if (ok) { ui.focus = null; go(4); }
+            } }, "Build this process")));
   }
 
   // ------------------------------------------------------------------
@@ -1150,7 +1167,7 @@
     if (!plan || plan.status === "drafting") {
       return h("div", null, title("Review the plan"),
         h("div", { class: "loading-line", "aria-live": "polite" }, h("span", { class: "spin" }, "◌"),
-          "Drafting the plan from the code: what it does today, fixes worth making, test data and the design. About a minute."),
+          "Drafting the plan from the code, then designing it with Temporal’s developer skill and the Temporal docs. A few minutes."),
         h("div", { class: "btns" }, h("button", { type: "button", class: "btn", onclick: () => go(5) }, "Back")));
     }
     if (plan.status === "failed") {
@@ -1159,12 +1176,12 @@
         h("div", { class: "btns" }, h("button", { type: "button", class: "btn", onclick: () => go(5) }, "Back")));
     }
     const ro = run.status !== "plan_ready";
+    const edit = plan.design_edit || {};
+    const revising = ["pending", "revising"].includes(edit.status);
     const kept = (plan.claims || []).filter((c) => c.status !== "rejected").length;
-    const fixes = (plan.changes || []).filter((c) => c.decision !== "decline").length;
-    const files = ((plan.testdata && plan.testdata.files) || []).length;
-    const summary = [plural(kept, "behavior") + " kept", plural(fixes, "fix", "fixes"), plural(files, "test file"),
-      (plan.design && plan.design.summary) || ""].filter(Boolean).join(" · ");
-    const approveBtn = () => h("button", { type: "button", class: "btn pri", disabled: ui.busy || kept === 0, onclick: approvePlan },
+    const included = !plan.testdata || plan.testdata.included !== false;
+    const approveBtn = () => h("button", { type: "button", class: "btn pri", disabled: ui.busy || kept === 0 || !included || revising,
+      title: revising ? "Wait for the design revision" : !included ? "Include the test data first" : null, onclick: approvePlan },
       ui.busy ? "Approving…" : "Approve plan and generate");
     const part = (n, heading, sub, body) => h("section", { class: "plan-part" },
       h("div", { class: "plan-part-h" }, h("span", { class: "num" }, String(n)), h("div", null, h("b", null, heading), sub ? h("span", { class: "hint" }, sub) : null)),
@@ -1172,17 +1189,22 @@
 
     return h("div", null,
       title(ro ? "The approved plan" : "Review the plan"),
-      ro ? h("p", { class: "ro" }, run.status === "planning" ? "Drafting…" : "Approved. The POC was generated from this plan.")
-        : h("p", { class: "hint" }, "Everything below is pre-filled from the code. Change only what looks wrong, then approve."),
-      h("div", { class: "plan-top" }, h("span", null, summary), ro ? null : approveBtn()),
-      part(1, "What the code does today", "The POC must preserve these. Read from the code and checked against it.", PLAN_PARTS.claims(plan, ro)),
-      part(2, "Fixes on purpose", "Bugs the POC can fix. Included fixes show as “Intended fix” in the results.", PLAN_PARTS.changes(plan, ro)),
-      part(3, "Test data", "Synthetic. Both versions run on exactly this, so the original code is the answer key.", SECTION_BODY.testdata(plan, ro)),
-      part(4, "Design", plan.design && plan.design.summary, SECTION_BODY.design(plan)),
+      ro ? h("p", { class: "ro" }, run.status === "planning" ? "Drafting…" : "Approved. The POC was generated from this plan.") : null,
+      plan.overview ? h("p", { class: "narr lead" }, plan.overview) : null,
+      (plan.contradictions || []).length ? h("div", { class: "conf" }, h("b", null, "Your notes and the code disagree"),
+        h("ul", null, plan.contradictions.map((c) => h("li", null, `You noted: “${c.note}”. The code: ${c.code}`,
+          (c.refs || []).length ? h("span", { class: "hint" }, " ", h("code", null, c.refs.join(", "))) : null)))) : null,
+      part(1, "What the code does today", "The POC must preserve these.", PLAN_PARTS.claims(plan, ro)),
+      part(2, "Fixes on purpose", "Included fixes show as “Intended fix” in the results.", PLAN_PARTS.changes(plan, ro)),
+      part(3, "Test data", null, SECTION_BODY.testdata(plan, ro)),
+      part(4, "Design", plan.design && plan.design.summary, SECTION_BODY.design(plan, ro, revising)),
       errorBox(),
+      ro ? null : h("div", { class: "approve-box" },
+        h("p", { class: "narr" }, plan.approve_summary || "Approving starts the build: the POC is generated from this plan and checked against the original on the test data."),
+        approveBtn()),
       h("div", { class: "btns" },
         h("button", { type: "button", class: "btn", onclick: () => go(5) }, "Back"),
-        ro ? (allowedStep(run) >= 7 ? h("button", { type: "button", class: "btn pri", onclick: () => go(7) }, "Continue") : null) : approveBtn()));
+        ro ? (allowedStep(run) >= 7 ? h("button", { type: "button", class: "btn pri", onclick: () => go(7) }, "Continue") : null) : null));
   }
 
   const PLAN_PARTS = {
@@ -1191,7 +1213,6 @@
       const cs = plan.claims || [];
       if (!cs.length) return h("p", { class: "empty" }, "No behaviors were recorded.");
       const glance = cs.filter((c) => c.confidence && c.confidence !== "high");
-      const rest = cs.filter((c) => !glance.includes(c));
       const row = (c) => {
         const editing = pu.editing === c.id;
         const text = c.status === "edited" && c.edited_text ? c.edited_text : c.text;
@@ -1208,6 +1229,7 @@
               } }, "Save")));
           })() : h("div", { class: "beh-txt" }, h("span", null, text),
             h("span", { class: "refs" }, (c.refs || []).join(", "),
+              c.confidence && c.confidence !== "high" ? h("span", { class: "conf-pill" }, `${c.confidence} confidence`) : null,
               c.status === "edited" ? h("span", { class: "conf-pill" }, "edited") : null,
               dropped ? h("span", { class: "conf-pill" }, "dropped") : null)),
           !ro && !editing ? h("span", { class: "beh-act" },
@@ -1215,69 +1237,90 @@
               : [h("button", { type: "button", class: "lnk", onclick: () => { pu.editing = c.id; pu.editText = text; render(); } }, "Edit"),
                 h("button", { type: "button", class: "lnk", onclick: () => planPut({ claims: [{ id: c.id, status: "rejected" }] }) }, "Drop")]) : null);
       };
+      const ordered = [...glance, ...cs.filter((c) => !glance.includes(c))];
+      const open = pu.open === "claims" || !!pu.editing;
       return h("div", null,
-        glance.length ? h("div", { class: "glance" },
-          h("div", { class: "glance-h" }, `Worth a glance: ${plural(glance.length, "behavior")} the checks were less sure about`),
-          glance.map(row)) : null,
-        rest.length ? h("details", { class: "fold", open: !glance.length || null },
-          h("summary", null, glance.length ? `The other ${plural(rest.length, "behavior")}, confirmed in the code` : `${plural(rest.length, "behavior")}, confirmed in the code`),
-          rest.map(row)) : null);
+        plan.today_summary ? h("p", { class: "narr" }, plan.today_summary) : null,
+        h("details", { class: "fold", open: open || null, ontoggle: (e) => { pu.open = e.target.open ? "claims" : null; } },
+          h("summary", null, `The ${plural(cs.length, "behavior")}, read from the code` + (glance.length ? ` (${glance.length} worth a glance)` : "")),
+          ordered.map(row)));
     },
     changes(plan, ro) {
+      const pu = ui.plan;
       const cs = plan.changes || [];
-      if (!cs.length) return h("p", { class: "empty" }, "None found. The POC keeps today’s behavior exactly.");
+      if (!cs.length) return h("p", { class: "narr" }, plan.changes_summary || "None found. The POC keeps today’s behavior exactly.");
       // Included unless skipped (an undecided fix is included when the plan is approved).
-      return h("div", null, cs.map((c) => h("label", { class: "scope-item" + (c.decision !== "decline" ? "" : " off") },
-        h("input", { type: "checkbox", checked: c.decision !== "decline", disabled: ro || ui.busy,
-          onchange: (e) => planPut({ changes: [{ id: c.id, decision: e.target.checked ? "approve" : "decline" }] }) }),
-        h("span", null, h("b", null, c.title), c.detail ? h("span", { class: "sub" }, c.detail) : null,
-          (c.refs || []).length ? h("span", { class: "refs" }, c.refs.join(", ")) : null))));
+      const on = cs.filter((c) => c.decision !== "decline").length;
+      return h("div", null,
+        plan.changes_summary ? h("p", { class: "narr" }, plan.changes_summary) : null,
+        h("details", { class: "fold", open: pu.open === "changes" || null, ontoggle: (e) => { pu.open = e.target.open ? "changes" : (pu.open === "changes" ? null : pu.open); } },
+          h("summary", null, `${plural(cs.length, "fix", "fixes")}, ${on} included`),
+          cs.map((c) => h("label", { class: "scope-item" + (c.decision !== "decline" ? "" : " off") },
+            h("input", { type: "checkbox", checked: c.decision !== "decline", disabled: ro || ui.busy,
+              onchange: (e) => planPut({ changes: [{ id: c.id, decision: e.target.checked ? "approve" : "decline" }] }) }),
+            h("span", null, h("b", null, c.title), c.detail ? h("span", { class: "sub" }, c.detail) : null,
+              (c.refs || []).length ? h("span", { class: "refs" }, c.refs.join(", ")) : null)))));
     },
   };
 
   const SECTION_BODY = {
     testdata(plan, ro) {
       const td = plan.testdata || {};
-      const pu = ui.plan;
-      const files = td.files || [];
-      return h("div", null,
-        td.summary ? h("p", { style: "margin:0;font-size:13.5px" }, td.summary) : null,
-        h("p", { class: "hint" }, "Synthetic data. Both versions run on exactly these files, so the original code is the answer key."),
-        td.frozen_time ? h("p", { style: "margin:6px 0 0;font-size:13px" }, h("b", null, "Clock frozen at "), h("code", null, td.frozen_time)) : null,
-        (td.failures || []).length ? h("div", null, h("div", { class: "lbl" }, "Injected failures"),
-          h("ul", { class: "plain" }, td.failures.map((f) => h("li", null, h("b", null, f.boundary), ` fails ${plural(f.times, "time")}`, f.detail ? `: ${f.detail}` : "")))) : null,
-        h("div", { class: "lbl" }, "Files"),
-        files.map((f) => {
-          const editing = pu.editFile === f.name;
-          const shown = pu.preview[f.name];
-          return h("div", { class: "filebox" },
-            h("div", { class: "filebox-h" }, h("code", null, f.name), h("span", { class: "d" }, f.description || ""),
-              !editing ? h("button", { type: "button", class: "btn sm", "aria-expanded": String(!!shown),
-                onclick: () => { pu.preview[f.name] = !shown; render(); } }, shown ? "Hide" : "Preview") : null,
-              !ro && !editing ? h("button", { type: "button", class: "btn sm", onclick: () => { pu.editFile = f.name; pu.editFileText = f.content || ""; render(); } }, "Edit") : null),
-            editing ? h("div", { style: "padding:0 10px 10px" }, (() => {
-              const t = h("textarea", { class: "field code", "aria-label": `Edit ${f.name}`, oninput: (e) => { pu.editFileText = e.target.value; } });
-              t.value = pu.editFileText; return t;
-            })(), h("div", { class: "sec-foot", style: "margin-top:6px" },
-              h("button", { type: "button", class: "btn sm", onclick: () => { pu.editFile = null; render(); } }, "Cancel"),
-              h("button", { type: "button", class: "btn sm pri", onclick: async () => {
-                if (/\.json$/i.test(f.name)) { try { JSON.parse(pu.editFileText); } catch (e) { ui.error = `${f.name} is not valid JSON: ${e.message}`; return render(); } }
-                const all = files.map((x) => ({ name: x.name, content: x.name === f.name ? pu.editFileText : x.content }));
-                const ok = await planPut({ testdata_files: all });
-                if (ok) { pu.editFile = null; render(); }
-              } }, "Save")))
-              : shown ? h("pre", { class: "prev" }, f.content || "") : null);
-        }));
+      const included = td.included !== false;
+      return h("label", { class: "checkline", style: "margin-top:0" },
+        h("input", { type: "checkbox", checked: included, disabled: ro || ui.busy,
+          onchange: (e) => planPut({ testdata_included: e.target.checked }) }),
+        h("span", null, h("b", null, "Synthetic test data included"),
+          h("span", { class: "hint" }, " Both versions run on it, so the original code is the answer key."),
+          included ? null : h("span", { class: "errl" }, " The POC can’t be checked without it.")));
     },
-    design(plan) {
+    design(plan, ro, revising) {
       const d = plan.design || {};
+      const pu = ui.plan;
+      const research = plan.research || {};
+      const edits = plan.design_edits || [];
+      const edit = plan.design_edit || {};
+      const grounded = [
+        (research.skill_read || []).length ? `Temporal’s developer skill (${plural(research.skill_read.length, "reference")} read)` : "Temporal’s developer skill",
+        research.docs_available === false ? "the Temporal docs were unavailable" : `the Temporal docs (${plural((research.docs_queries || []).length, "search", "searches")})`,
+      ];
       return h("div", null,
-        d.why ? h("p", { style: "margin:0 0 6px;font-size:13.5px" }, d.why) : null,
-        (d.elements || []).map((el) => h("div", { class: "crit" },
-          h("span", { class: "txt" }, h("span", { class: "kind " + el.kind }, (el.kind || "").replace("_", " ")), h("b", null, el.name),
-            el.does ? h("span", { class: "why", style: "color:var(--ink-2)" }, el.does) : null))),
-        (d.removes || []).length ? h("div", null, h("div", { class: "lbl" }, "Removes"), h("ul", { class: "plain" }, d.removes.map((x) => h("li", null, x)))) : null,
-        (d.stays || []).length ? h("div", null, h("div", { class: "lbl" }, "Stays outside Temporal"), h("ul", { class: "plain" }, d.stays.map((x) => h("li", null, x)))) : null);
+        d.summary_text ? h("p", { class: "narr" }, d.summary_text) : (d.why ? h("p", { class: "narr" }, d.why) : null),
+        h("p", { class: "hint", style: "margin:0 0 6px" }, `Designed from Code Atlas’s design with ${grounded.join(" and ")}.`),
+        edits.length ? h("p", { class: "hint", style: "margin:0 0 6px" }, `Revised ${plural(edits.length, "time")}. Latest: ${edits[edits.length - 1].note || edits[edits.length - 1].request}`) : null,
+        h("details", { class: "fold", open: pu.open === "design" || null, ontoggle: (e) => { if (e.target.open) pu.open = "design"; } },
+          h("summary", null, `The design: ${d.summary || "elements"}`),
+          (d.elements || []).map((el) => h("div", { class: "crit" },
+            h("span", { class: "txt" }, h("span", { class: "kind " + el.kind }, (el.kind || "").replace("_", " ")), h("b", null, el.name),
+              el.does ? h("span", { class: "why", style: "color:var(--ink-2)" }, el.does) : null))),
+          (d.decisions || []).length ? h("div", null, h("div", { class: "lbl" }, "Decisions"),
+            h("ul", { class: "plain" }, d.decisions.map((x) => h("li", null, h("b", null, x.decision), `: ${x.reason}`,
+              (x.cites || []).length ? h("span", { class: "refs" }, " ", x.cites.map((c) => /^https?:/.test(c)
+                ? h("a", { class: "lnk", href: c, target: "_blank", rel: "noopener" }, c.replace(/^https?:\/\/(docs\.temporal\.io)?/, "").slice(0, 60) || "docs")
+                : h("code", null, c))) : null)))) : null,
+          (d.removes || []).length ? h("div", null, h("div", { class: "lbl" }, "Removes"), h("ul", { class: "plain" }, d.removes.map((x) => h("li", null, x)))) : null,
+          (d.stays || []).length ? h("div", null, h("div", { class: "lbl" }, "Stays outside Temporal"), h("ul", { class: "plain" }, d.stays.map((x) => h("li", null, x)))) : null,
+          (d.questions || []).length ? h("div", null, h("div", { class: "lbl" }, "Open questions"), h("ul", { class: "plain" }, d.questions.map((x) => h("li", null, x)))) : null),
+        ro ? null : h("div", { class: "design-edit" },
+          h("label", { class: "lbl", for: "tz-design-edit" }, "Changes you want to the design"),
+          (() => {
+            const t = h("textarea", { class: "field area", id: "tz-design-edit", rows: 3, disabled: revising,
+              placeholder: "For example: one Schedule for all three variants with a parameter; send the alert through Slack instead of email.",
+              oninput: (e) => { pu.designText = e.target.value; } });
+            t.value = pu.designText || "";
+            return t;
+          })(),
+          h("div", { class: "sec-foot", style: "margin-top:6px;align-items:center" },
+            revising ? h("span", { class: "loading-line", style: "margin:0" }, h("span", { class: "spin" }, "◌"),
+              edit.status === "pending" ? "Waiting to revise…" : "Revising the design with the skill and the docs…") : null,
+            edit.status === "failed" ? h("span", { class: "errl" }, `The last edit failed: ${edit.error || "unknown error"}`) : null,
+            h("button", { type: "button", class: "btn pri", disabled: ui.busy || revising,
+              onclick: async () => {
+                const request = (pu.designText || "").trim();
+                if (request.length < 3) { ui.error = "Describe the changes you want first."; return render(); }
+                const ok = await act(() => api(`/api/tz/runs/${enc(state.runId)}/design-edit`, { method: "POST", body: { request } }));
+                if (ok) { pu.designText = ""; render(); }
+              } }, "Make edits"))));
     },
   };
 
@@ -1325,43 +1368,85 @@
 
   const RESULT = { match: ["m", "Match"], intended: ["i", "Intended fix"], new: ["n", "New behavior"], mismatch: ["x", "Mismatch"] };
 
+  const STD = { passed: ["Passed", "m"], open: ["Open", "i"], not_applicable: ["Not applicable", "na"] };
+
   function screenResults(run) {
     const r = run.results;
+    const v = run.packet;
     if (!r) return h("div", null, h("p", { class: "empty" }, "Results appear when the run finishes."),
       h("div", { class: "btns" }, h("button", { type: "button", class: "btn", onclick: () => go(7) }, "Back")));
     const id = enc(runId(run));
-    const crit = r.criteria || [];
-    return h("div", null,
-      h("div", { class: "tags" }, (r.outcomes || []).map((o) => h("span", { class: "tag" + (o.ok === true ? " okt" : o.ok === false ? " badt" : "") },
+    if (!v) return h("div", null, h("p", { class: "empty" }, "The review packet could not be drawn. Export it below."),
+      h("a", { class: "btn pri", href: `/api/tz/runs/${id}/packet`, download: `temporalize-${runId(run)}.zip` }, "Export review packet"));
+    const n = v.narrative || {};
+    const sec = (num, title, sub, ...body) => h("section", { class: "pk-sec" },
+      h("h3", null, h("span", { class: "pk-n" }, String(num)), title), sub ? h("p", { class: "hint" }, sub) : null, ...body);
+    const table = (head, rows) => h("div", { class: "scroll" }, h("table", { class: "tbl" },
+      h("thead", null, h("tr", null, head.map((x) => h("th", null, x)))), h("tbody", null, rows)));
+    const ch = v.changed || {};
+    const td = v.test_data || {};
+    return h("div", { class: "packet" },
+      h("p", { class: "hint", style: "margin:0" }, `Temporalize review packet${v.for ? ` for ${v.for}` : ""}`),
+      h("h3", { class: "pk-title" }, n.title || "Results"),
+      n.lede ? h("p", { class: "narr lead" }, n.lede) : null,
+      h("div", { class: "tags" }, (v.outcomes || []).map((o) => h("span", { class: "tag" + (o.ok === true ? " okt" : o.ok === false ? " badt" : "") },
         o.ok === true ? "✓ " : o.ok === false ? "✗ " : "", o.label))),
-      h("div", { class: "lbl", style: "display:flex;justify-content:space-between;gap:8px" }, h("span", null, "Same test data, both versions"),
-        h("button", { type: "button", class: "lnk", onclick: () => showTestData(run) }, "View test data")),
-      (r.comparison || []).length ? h("div", { class: "scroll" }, h("table", { class: "tbl" },
-        h("thead", null, h("tr", null, h("th", null, "Check"), h("th", null, "Original"), h("th", null, "Temporal"), h("th", null, "Result"))),
-        h("tbody", null, r.comparison.map((c) => {
+      h("div", { class: "pk-facts" }, (v.facts || []).map(([k, val]) => h("div", null, h("span", null, k), h("b", null, val || "—")))),
+      h("p", { class: "hint" }, h("b", { style: "color:var(--local)" }, "Synthetic data only. "), "No real customer data was used to produce these results."),
+
+      sec(1, "The use case", "From the brief confirmed for this run. Anything the code contradicted is noted.",
+        n.problem ? h("blockquote", { class: "pk-quote" }, n.problem) : null,
+        h("table", { class: "tbl" }, h("tbody", null, (n.use_case || []).map((u) => h("tr", null, h("td", { style: "width:28%" }, u.label),
+          h("td", null, u.value, u.source ? h("span", { class: "hint" }, `  ${u.source}`) : null)))))),
+
+      sec(2, "Scorecard", r.criteria_summary || "The success criteria agreed before any code was written.",
+        table(["Criterion", "Priority", "Result", "Evidence"], [
+          ...(v.criteria || []).map((c) => h("tr", null, h("td", null, c.text), h("td", null, h("span", { class: "pri-tag" + (c.priority === "P1" ? " p1" : "") }, c.priority)),
+            h("td", { class: c.passed ? "m" : "x" }, c.passed ? "Passed" : "Not passed"), h("td", null, cellValue(c.evidence)))),
+          ...(v.criteria_off || []).map((c) => h("tr", null, h("td", null, c.text), h("td", null, h("span", { class: "pri-tag p1" }, c.priority)),
+            h("td", { class: "na" }, "Not selected"), h("td", { class: "na" }, "None")))])),
+
+      sec(3, "Side by side", "The original code and the Temporal version ran on the same test data. The original code is the answer key.",
+        (v.comparison || []).length ? table(["Check", "Original", "Temporal", "Result"], v.comparison.map((c) => {
           const [cls, label] = RESULT[c.result] || ["", c.result || ""];
           return h("tr", { title: c.detail || null }, h("td", null, c.check), h("td", null, cellValue(c.original)), h("td", null, cellValue(c.temporal)), h("td", { class: cls }, label));
-        })))) : h("p", { class: "empty" }, "No comparison was recorded."),
-      h("div", { class: "lbl" }, "Success criteria"),
-      h("p", { style: "margin:0;font-size:13.5px" }, r.criteria_summary || ""),
-      crit.length ? h("details", { class: "pass" }, h("summary", null, "Each criterion"),
-        crit.map((c) => h("div", { class: "finding" }, h("span", { class: "sev " + (c.passed === false ? "high" : "") }, c.passed === true ? "pass" : c.passed === false ? "fail" : "n/a"),
-          h("b", null, `${c.priority || ""} `), c.text, c.evidence ? h("div", null, c.evidence) : null))) : null,
-      h("div", { class: "lbl", style: "display:flex;justify-content:space-between;gap:8px" }, h("span", null, "Changes"),
-        h("button", { type: "button", class: "lnk", onclick: () => showDiff(run) }, "View diff")),
-      h("p", { style: "margin:0;font-size:13.5px" }, r.changes_summary || "",
-        r.diff_stats ? h("span", { class: "hint" }, ` ${plural(r.diff_stats.files, "file")}, +${fmtInt(r.diff_stats.insertions)} −${fmtInt(r.diff_stats.deletions)}`) : null),
-      typeof r.review_passes === "number" ? h("p", { class: "hint" }, `After ${plural(r.review_passes, "review pass", "review passes")}.`) : null,
-      (r.leftover_findings || []).length ? h("div", null, h("div", { class: "lbl" }, "Left over after review"),
-        r.leftover_findings.map((f) => h("div", { class: "finding", style: "padding-left:0" }, h("span", { class: "sev " + (f.severity || "") }, f.severity || ""),
-          h("b", null, f.title || ""), f.file ? [" ", h("code", null, f.file)] : null, f.detail ? h("div", null, f.detail) : null))) : null,
-      (r.limitations || []).length ? h("div", null, h("div", { class: "lbl" }, "Limitations"),
-        h("ul", { class: "plain" }, r.limitations.map((x) => h("li", null, x)))) : null,
+        })) : h("p", { class: "empty" }, "No comparison was recorded."),
+        (v.intended || []).map((c) => h("div", { class: "pk-callout" }, h("b", null, `Intended fix, approved before generation: ${c.title}`), h("div", null, c.detail)))),
+
+      sec(4, "What changed", ch.summary,
+        h("div", { class: "mets", style: "margin:8px 0" }, met(fmtInt(ch.entry_points || 0), "original files changed"),
+          met(`−${fmtInt(ch.removed || 0)}`, "lines removed"), met(`+${fmtInt(ch.added || 0)}`, "lines added"), met(fmtInt(ch.tests || 0), "new tests")),
+        (ch.before_after || []).length ? table(["Before", "After"], ch.before_after.map((x) => h("tr", null, h("td", null, x.before), h("td", null, x.after)))) : null,
+        h("p", { class: "hint" }, h("button", { type: "button", class: "lnk", onclick: () => showDiff(run) }, "View the full diff"))),
+
+      sec(5, "POC Standard", `Checked against ${v.standard_version || "draft v0"}. Checks that don’t apply to this process are marked so rather than counted against it.`,
+        h("div", { class: "pk-std" }, (v.standard || []).map((x) => {
+          const [label, cls] = STD[x.status] || [x.status, ""];
+          return h("div", { title: x.note || null }, h("span", null, x.check), h("span", { class: cls }, label));
+        }))),
+
+      sec(6, "Test data", "Everything both versions ran on. All of it is made up and lives in temporal-poc/testdata/ on the branch.",
+        td.sample ? h("div", null, h("p", { style: "margin:4px 0" }, h("b", null, `${td.sample.file}, first ${td.sample.rows.length} of ${fmtInt(td.sample.total)} rows`)),
+          table(td.sample.columns, td.sample.rows.map((row) => h("tr", null, row.map((c) => h("td", null, c)))))) : null,
+        (td.scenario || []).length ? h("div", null, h("p", { style: "margin:10px 0 4px" }, h("b", null, "Scenario")),
+          h("table", { class: "tbl" }, h("tbody", null, td.scenario.map((x) => h("tr", null, h("td", { style: "width:28%" }, x.label), h("td", null, x.value)))))) : null),
+
+      sec(7, "Limits and what’s next", "What this run doesn’t show, and where to go from here.",
+        h("div", { class: "lbl" }, "Not proven by this run"),
+        h("ul", { class: "plain" }, (v.not_proven || []).map((x) => h("li", null, x))),
+        h("div", { class: "lbl" }, "Next steps"),
+        (v.next_steps || []).map((c) => h("div", { class: "proc" }, h("div", { class: "t" }, c.title,
+          c.verdict ? h("span", { class: "verdict" + (c.verdict === "Borderline" ? " borderline" : "") }, c.verdict) : null), c.text ? h("p", null, c.text) : null))),
+
+      sec(8, "Run it yourself", "Everything runs locally against a Temporal dev server, in stub mode by default.",
+        h("pre", { class: "prev" }, (v.run_it || []).join("\n"))),
+
       errorBox(),
       h("div", { class: "btns" },
         h("span", { style: "display:flex;gap:8px;flex-wrap:wrap" },
           r.temporal_ui_url ? h("a", { class: "btn", href: r.temporal_ui_url, target: "_blank", rel: "noopener" }, "Open in Temporal UI") : null,
-          h("button", { type: "button", class: "btn", onclick: () => showPush(run) }, "Push to GitHub")),
+          h("button", { type: "button", class: "btn", onclick: () => showPush(run) }, "Push to GitHub"),
+          h("a", { class: "btn", href: `/api/tz/runs/${id}/packet.html`, target: "_blank", rel: "noopener" }, "Open the packet page ↗")),
         h("a", { class: "btn pri", href: `/api/tz/runs/${id}/packet`, download: `temporalize-${runId(run)}.zip` }, "Export review packet")));
   }
 
@@ -1379,16 +1464,6 @@
     const firstBtn = back.querySelector(".close");
     if (firstBtn) firstBtn.focus();
     return { close, bodyEl, footEl };
-  }
-
-  function showTestData(run) {
-    const td = (run.plan && run.plan.testdata) || {};
-    modal("Test data (synthetic)", h("div", null,
-      td.summary ? h("p", { style: "margin-top:0" }, td.summary) : null,
-      td.frozen_time ? h("p", { class: "hint" }, "Clock frozen at ", h("code", null, td.frozen_time)) : null,
-      (td.files || []).map((f) => h("div", { class: "filebox" },
-        h("div", { class: "filebox-h" }, h("code", null, f.name), h("span", { class: "d" }, f.description || "")),
-        h("pre", { class: "prev" }, f.content || "")))), null, true);
   }
 
   async function showDiff(run) {
@@ -1448,7 +1523,7 @@
   // Boot
   // ------------------------------------------------------------------
 
-  const SCREENS = [screenSetup, screenFound, screenFocus, screenSuccess, screenScope, screenPlan, screenGenerate, screenResults];
+  const SCREENS = [screenSetup, screenFound, screenRecommend, screenFocus, screenSuccess, screenPlan, screenGenerate, screenResults];
 
   setInterval(() => {
     for (const el of document.querySelectorAll(".elapsed[data-since]")) {

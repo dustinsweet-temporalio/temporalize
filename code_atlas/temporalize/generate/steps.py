@@ -29,7 +29,7 @@ def _workspace(run: dict):
 
 def _out(result) -> dict:
     return {"summary": result.summary, "files_changed": result.files_changed, "turns": result.turns,
-            "finished": result.finished, "done": result.done}
+            "finished": result.finished, "done": result.done, "research": result.research}
 
 
 def generate_code(llm, run: dict, process: dict, heartbeat: Callable[[str], None]) -> dict:

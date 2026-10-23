@@ -1,11 +1,13 @@
 """
 Temporalize API (/api/tz/*), mounted by app.py. The contract is in docs/TEMPORALIZE.md.
 
-Screens 1 to 4 run here, in the app, with no model calls: settings, the clone or the
+Screens 1 and 2 run here, in the app, with no model calls: settings, the clone or the
 local folder, and the local scan (a background task that ticks the checklist on the run
-document). "Start assessment" starts the Code Atlas sync of the repository and the
-run's TemporalizeWorkflow; from then on the UI's decisions are written to the run
-document and signalled to the workflow.
+document). "Start assessment" (screen 2) starts the Code Atlas sync of the repository and
+the run's TemporalizeWorkflow. Once the report is in, the user picks the process from
+Code Atlas's recommendation (screen 3), the focus (4) and the criteria (5); those are
+saved here, and confirming them signals the workflow, as do the plan's approval and
+design change requests (screen 6).
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ router = APIRouter(prefix="/api/tz")
 RUN_PATTERN = r"^r-\d{4,}$"
 PLAN_SECTIONS = ("claims", "changes", "testdata", "design")
 LOCKED = {"assessing", "scoping", "not_suitable", "planning", "plan_ready", "generating", "done", "failed", "stopped"}
+PICKING = ("scoping", "not_suitable")    # screens 3-5: the report is in, the scope not confirmed yet
 
 _tasks: set[asyncio.Task] = set()
 
@@ -113,15 +116,15 @@ def _now_text(run: dict) -> str:
     if status == "scan_failed":
         return "Setup check failed"
     if status == "ready":
-        step = run.get("step", 2)
-        return {2: "Ready for review", 3: "Waiting for your focus", 4: "Ready to start"}.get(step, "Ready")
+        return "Ready to start the assessment"
     if status == "assessing":
         stages = (run.get("assessment") or {}).get("stages", [])
         running = next((s for s in stages if s.get("state") == "running"), None)
         return {"index": "Indexing with Code Atlas", "report": "Building the Temporal report",
-                "variants": "Finding how it runs"}.get((running or {}).get("id"), "Starting the assessment")
+                "variants": "Naming the systems it talks to"}.get((running or {}).get("id"), "Starting the assessment")
     if status == "scoping":
-        return "Waiting for your scope"
+        return {3: "Waiting for your pick", 4: "Waiting for your focus", 5: "Waiting for your criteria"}.get(
+            run.get("step") or 3, "Waiting for your scope")
     if status == "not_suitable":
         return "Not suitable"
     if status == "planning":
@@ -158,10 +161,11 @@ def _calls(run: dict) -> int:
 def _sent(run: dict) -> list[str]:
     if not (run.get("assessment") or {}).get("started_at"):
         return []
-    brief = run.get("brief") or {}
-    sent = ["Source files", "brief"]
-    if brief.get("notes"):
-        sent.append("notes")
+    sent = ["Source files"]
+    if (run.get("scope") or {}).get("confirmed"):
+        sent.append("brief")
+        if (run.get("brief") or {}).get("notes"):
+            sent.append("notes")
     return sent
 
 
@@ -182,6 +186,13 @@ def view(run: dict) -> dict:
     if (run.get("generate") or {}).get("smoke", {}).get("url"):
         links["smoke"] = run["generate"]["smoke"]["url"]
     out["links"] = links
+    if run.get("results"):
+        try:
+            from temporalize.generate.packet import packet_view
+
+            out["packet"] = packet_view(run)
+        except Exception as e:  # the results stay readable without the write-up
+            logger.warning(f"Packet view for {run.get('_id')} failed: {e}")
     return out
 
 
@@ -343,7 +354,7 @@ def _index_for(folder: Path, preferred: str) -> tuple[str, bool]:
 
 async def _scan_run(run_id: str, token: str | None) -> None:
     """The screen 2 checklist, line by line. A failed line stops the scan with its error."""
-    from temporalize import rules, scan, sources
+    from temporalize import scan, sources
 
     def line(cid: str, state: str, detail: str | None = None, error: str | None = None, label: str | None = None):
         store.set_stage(run_id, "checks", cid, state, detail, label, error)
@@ -411,13 +422,9 @@ async def _scan_run(run_id: str, token: str | None) -> None:
         await asyncio.to_thread(_atlas_ready, folder, index)
         await asyncio.to_thread(line, "atlas", "done", f"index {index}" + (" (sync)" if exists else " (new)"))
 
-        brief = run.get("brief") or {}
-        fresh = await asyncio.to_thread(store.get_run, run_id)
         await asyncio.to_thread(store.update_run, run_id, {
-            "scan": result, "exclude": exclude, "status": "ready",
-            "focus_options": rules.focus_options(result),
-            "criteria": rules.suggest_criteria(result, brief, (fresh or {}).get("criteria") or []),
-            "step": max(3, (fresh or {}).get("step") or 2), "error": None,   # screen 3 is next
+            "scan": result, "exclude": exclude, "status": "ready", "error": None,
+            # Focus areas and criteria wait for Code Atlas's recommendation (screens 4 and 5).
         })
     except Exception as e:
         message = str(e) or type(e).__name__
@@ -457,11 +464,22 @@ class CriteriaBody(BaseModel):
 
 
 def _editable(run: dict) -> JSONResponse | None:
-    if run.get("status") in LOCKED:
-        return _error("The assessment has started, so the brief and criteria can no longer change.", 409)
-    if run.get("status") in ("scanning", "scan_failed"):
-        return _error("Finish the scan first.", 409)
+    """The brief and criteria are set after Code Atlas's recommendation, until the scope is confirmed."""
+    if run.get("status") not in PICKING:
+        return _error("The focus and criteria are set once Code Atlas has recommended a process."
+                      if run.get("status") in ("scanning", "scan_failed", "ready", "assessing")
+                      else "The scope is confirmed, so the focus and criteria can no longer change.", 409)
+    if (run.get("scope") or {}).get("confirmed"):
+        return _error("The scope is confirmed, so the focus and criteria can no longer change.", 409)
     return None
+
+
+def _systems(run: dict) -> list[dict]:
+    """The selected process's external systems as Code Atlas named them, in the rules' shape."""
+    from temporalize import rules
+
+    scope = run.get("scope") or {}
+    return rules.tools_from_systems(scope.get("systems") or [], scope.get("selected"))
 
 
 @router.put("/runs/{run_id}/brief")
@@ -475,9 +493,9 @@ async def save_brief(run_id: str, body: BriefBody):
         return bad
     brief = body.model_dump(exclude={"criteria"})
     existing = body.criteria if body.criteria is not None else run.get("criteria") or []
-    criteria = rules.suggest_criteria(run.get("scan") or {}, brief, existing)
+    criteria = rules.suggest_criteria(run.get("scan") or {}, brief, existing, _systems(run))
     updated = await asyncio.to_thread(store.update_run, run_id, {
-        "brief": brief, "criteria": criteria, "step": max(4, run.get("step") or 2)})
+        "brief": brief, "criteria": criteria, "step": max(5, run.get("step") or 2)})
     return view(updated)
 
 
@@ -530,8 +548,6 @@ async def start(run_id: str):
     if run.get("status") != "ready":
         return _error("The assessment has already started." if run.get("status") in LOCKED
                       else "Finish the scan first.", 409)
-    if not any(c.get("on") for c in run.get("criteria") or []):
-        return _error("Pick at least one success criterion.", 400)
     settings = await asyncio.to_thread(tz_settings.run_settings, run)
     repo = run["repo"]
     index = repo["index"]
@@ -548,9 +564,9 @@ async def start(run_id: str):
         return _error(str(e), e.status)
     stages = [{"id": "index", "label": "Indexed files", "detail": "", "state": "running", "error": None},
               {"id": "report", "label": "Built the Temporal report", "detail": "", "state": "pending", "error": None},
-              {"id": "variants", "label": "Found how it runs", "detail": "", "state": "pending", "error": None}]
+              {"id": "variants", "label": "Named the systems it talks to", "detail": "", "state": "pending", "error": None}]
     await asyncio.to_thread(store.update_run, run_id, {
-        "status": "assessing", "step": 5, "assessment": {
+        "status": "assessing", "step": 3, "assessment": {
             "started_at": store.now(), "sync_workflow_id": sync["workflow_id"], "calls_base": base,
             "workflow_id": C.workflow_id(run_id), "stages": stages}})
     try:
@@ -590,13 +606,11 @@ class ScopeBody(BaseModel):
     borderline_confirmed: bool = False
 
 
-@router.post("/runs/{run_id}/scope")
-async def confirm_scope(run_id: str, body: ScopeBody):
-    run = await asyncio.to_thread(_load, run_id)
-    if isinstance(run, JSONResponse):
-        return run
-    if run.get("status") not in ("scoping", "not_suitable"):
-        return _error("Scope can be confirmed once the report is ready, and only once.", 409)
+def _selection(run: dict, body: ScopeBody) -> dict | JSONResponse:
+    """The run fields for the process the user picked (screen 3), or the error to return."""
+    from temporalize import rules
+    from temporalize.assess import in_scope_tags
+
     scope = run.get("scope") or {}
     proc = next((p for p in scope.get("processes", []) if p["key"] == body.selected), None)
     if proc is None:
@@ -606,26 +620,66 @@ async def confirm_scope(run_id: str, body: ScopeBody):
                       "Pick another process.", 409)
     if proc["verdict_class"] == "borderline" and not body.borderline_confirmed:
         return _error("This process is borderline. Confirm that you want to build it anyway.", 409)
-    variants = [{**v, "included": v["id"] in body.variants} for v in scope.get("variants", [])]
+    own = proc.get("variants")
+    if own is None:  # a run analyzed before variants were found per process
+        own = scope.get("variants", []) if body.selected == scope.get("selected") else []
+    variants = [{**v, "included": v["id"] in body.variants} for v in own]
     if variants and not any(v["included"] for v in variants):
         return _error("Include at least one way the code runs this process.", 400)
-    in_scope = scope.get("in_scope", [])
-    if body.in_scope is not None:
-        in_scope = [t for t in in_scope if t["id"] in body.in_scope]
     steps = [{**st, "included": body.steps is None or st["id"] in body.steps} for st in proc.get("steps") or []]
     if steps and not any(st["included"] for st in steps):
         return _error("Keep at least one step in scope.", 400)
     risks = [{**r, "included": body.risks is None or r["id"] in body.risks} for r in proc.get("risks") or []]
-    selection_changed = body.selected != scope.get("selected")
-    fields = {"scope.selected": body.selected, "scope.variants": variants, "scope.in_scope": in_scope,
-              "scope.steps": steps, "scope.risks": risks, "scope.notes": body.notes.strip(),
-              "scope.borderline_confirmed": body.borderline_confirmed, "scope.confirmed": True,
-              "status": "planning", "step": 6, "plan": {"status": "drafting"}}
-    if selection_changed:
-        # Another process: its variants were not analyzed; the plan draft reads the trigger from its card.
-        fields["scope.variants"] = []
-        fields["scope.in_scope"] = [{"id": "scope-entry", "label": proc.get("entry") or proc["name"]}]
-    await asyncio.to_thread(store.update_run, run_id, fields)
+    tags = in_scope_tags({**proc, "variants": [v for v in variants if v["included"]]})
+    if body.in_scope is not None:
+        tags = [t for t in tags if t["id"] in body.in_scope] or tags
+    systems = rules.tools_from_systems(scope.get("systems") or [], body.selected)
+    brief = run.get("brief") or {}
+    return {"scope.selected": body.selected, "scope.variants": variants, "scope.in_scope": tags,
+            "scope.steps": steps, "scope.risks": risks, "scope.notes": body.notes.strip(),
+            "scope.borderline_confirmed": body.borderline_confirmed, "scope.picked": True,
+            "focus_options": rules.focus_options(run.get("scan") or {}, systems),
+            "criteria": rules.suggest_criteria(run.get("scan") or {}, brief, run.get("criteria") or [], systems),
+            "step": max(4, run.get("step") or 3)}
+
+
+@router.put("/runs/{run_id}/selection")
+async def save_selection(run_id: str, body: ScopeBody):
+    """Screen 3: the process to build (from Code Atlas's recommendation) and what of it is in scope."""
+    run = await asyncio.to_thread(_load, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+    if run.get("status") not in PICKING or (run.get("scope") or {}).get("confirmed"):
+        return _error("A process can be picked once the report is ready, until the scope is confirmed.", 409)
+    fields = _selection(run, body)
+    if isinstance(fields, JSONResponse):
+        return fields
+    return view(await asyncio.to_thread(store.update_run, run_id, fields))
+
+
+@router.post("/runs/{run_id}/scope")
+async def confirm_scope(run_id: str, body: ScopeBody | None = None):
+    """Screen 5: confirm the pick, the focus and the criteria; the workflow drafts the plan."""
+    run = await asyncio.to_thread(_load, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+    if run.get("status") not in PICKING or (run.get("scope") or {}).get("confirmed"):
+        return _error("Scope can be confirmed once the report is ready, and only once.", 409)
+    if body is not None:
+        fields = _selection(run, body)
+        if isinstance(fields, JSONResponse):
+            return fields
+        run = await asyncio.to_thread(store.update_run, run_id, fields)
+    scope = run.get("scope") or {}
+    if not scope.get("picked"):
+        return _error("Pick the process to build first (screen 3).", 400)
+    proc = next((p for p in scope.get("processes", []) if p["key"] == scope.get("selected")), None)
+    if proc is None or proc["verdict_class"] == "not suitable":
+        return _error("Pick a process that is not marked not suitable.", 409)
+    if not any(c.get("on") for c in run.get("criteria") or []):
+        return _error("Pick at least one success criterion.", 400)
+    await asyncio.to_thread(store.update_run, run_id, {
+        "scope.confirmed": True, "status": "planning", "step": 6, "plan": {"status": "drafting"}})
     if (bad := await _signal(run_id, C.SCOPE_SIGNAL)) is not None:
         return bad
     return view(await asyncio.to_thread(store.get_run, run_id))
@@ -655,6 +709,7 @@ class PlanBody(BaseModel):
     claims: list[ClaimEdit] | None = None
     changes: list[ChangeEdit] | None = None
     testdata_files: list[DataFileEdit] | None = None
+    testdata_included: bool | None = None   # screen 6 checkbox: the synthetic test data is included
     approve: Literal["claims", "changes", "testdata", "design"] | None = None
     reopen: Literal["claims", "changes", "testdata", "design"] | None = None
     approve_all: bool = False     # the whole plan as it stands: undecided claims kept, undecided fixes included
@@ -682,6 +737,9 @@ async def edit_plan(run_id: str, body: PlanBody):
         for c in plan["changes"]:
             c["decision"] = edits.get(c["id"], c["decision"])
         approved["changes"] = False
+    if body.testdata_included is not None:
+        plan["testdata"]["included"] = body.testdata_included
+        approved["testdata"] = False
     if body.testdata_files is not None:
         files = {f["name"]: f for f in plan["testdata"]["files"]}
         for f in body.testdata_files:
@@ -702,6 +760,8 @@ async def edit_plan(run_id: str, body: PlanBody):
         bad = _bad_testdata(plan)
         if bad:
             return _error(bad, 400)
+        if (plan.get("design_edit") or {}).get("status") in ("pending", "revising"):
+            return _error("The design is being revised. Approve once the revision is in.", 409)
         approved = {s: True for s in PLAN_SECTIONS}
     if body.approve:
         if body.approve == "claims" and any(c["status"] == "pending" for c in plan["claims"]):
@@ -719,6 +779,8 @@ async def edit_plan(run_id: str, body: PlanBody):
 
 
 def _bad_testdata(plan: dict) -> str | None:
+    if plan["testdata"].get("included") is False:
+        return "The POC is checked against the original on the test data, so it has to be included."
     for f in plan["testdata"]["files"]:
         if f["name"].endswith(".json"):
             try:
@@ -726,6 +788,31 @@ def _bad_testdata(plan: dict) -> str | None:
             except ValueError as e:
                 return f"{f['name']} is not valid JSON: {e}"
     return None
+
+
+class DesignEdit(BaseModel):
+    request: str = Field(min_length=3, max_length=4000)
+
+
+@router.post("/runs/{run_id}/design-edit")
+async def design_edit(run_id: str, body: DesignEdit):
+    """Screen 6 "Make edits": the change request is stored, then the workflow revises the design."""
+    run = await asyncio.to_thread(_load, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+    plan = run.get("plan") or {}
+    if run.get("status") != "plan_ready" or plan.get("status") != "ready":
+        return _error("The design can be changed once the plan is drafted and until it is approved.", 409)
+    current = plan.get("design_edit") or {}
+    request = body.request.strip()
+    if current.get("status") in ("pending", "revising") and current.get("request"):
+        request = f"{current['request']}\n\n{request}"   # one revision covers both requests
+    await asyncio.to_thread(store.update_run, run_id, {
+        "plan.design_edit": {"status": "pending", "request": request, "requested_at": store.now()},
+        "plan.approved.design": False})
+    if (bad := await _signal(run_id, C.DESIGN_EDIT_SIGNAL)) is not None:
+        return bad
+    return view(await asyncio.to_thread(store.get_run, run_id))
 
 
 GENERATE_STAGES = [
@@ -783,7 +870,7 @@ async def retry(run_id: str):
         return _error("Only a failed or stopped run can be tried again.", 409)
     assessment = run.get("assessment") or {}
     if not assessment.get("started_at"):
-        return _error("This run never started its assessment; start it from screen 4.", 409)
+        return _error("This run never started its assessment; start it from screen 2.", 409)
     scope, plan, gen = run.get("scope") or {}, run.get("plan") or {}, run.get("generate") or {}
     approved = plan.get("status") == "ready" and all((plan.get("approved") or {}).get(s) for s in PLAN_SECTIONS)
     fields: dict = {"error": None}
@@ -798,7 +885,7 @@ async def retry(run_id: str):
     elif scope.get("confirmed"):
         fields.update({"status": "planning", "step": 6, "plan": {"status": "drafting"}})
     elif scope.get("processes"):
-        fields.update(status="scoping", step=5)
+        fields.update(status="scoping", step=max(3, run.get("step") or 3))
     else:
         # The index or the report did not finish: sync again (incremental: finished summaries are kept).
         repo, settings = run["repo"], await asyncio.to_thread(tz_settings.run_settings, run)
@@ -812,10 +899,10 @@ async def retry(run_id: str):
                 fields["assessment.sync_workflow_id"] = sync["workflow_id"]
         except SyncStartError as e:
             return _error(str(e), e.status)
-        fields.update({"status": "assessing", "step": 5, "assessment.stages": [
+        fields.update({"status": "assessing", "step": 3, "assessment.stages": [
             {"id": "index", "label": "Indexed files", "detail": "", "state": "running", "error": None},
             {"id": "report", "label": "Built the Temporal report", "detail": "", "state": "pending", "error": None},
-            {"id": "variants", "label": "Found how it runs", "detail": "", "state": "pending", "error": None}]})
+            {"id": "variants", "label": "Named the systems it talks to", "detail": "", "state": "pending", "error": None}]})
     await asyncio.to_thread(store.update_run, run_id, fields)
     try:
         client = await _client()
@@ -903,6 +990,25 @@ async def get_packet(run_id: str):
     name = f"temporalize-{(run.get('repo') or {}).get('name', 'repo')}-{run_id}.zip"
     return StreamingResponse(io.BytesIO(data), media_type="application/zip",
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/runs/{run_id}/packet.html")
+async def get_packet_html(run_id: str):
+    """The review packet as one page (also packet.html in the export)."""
+    from fastapi.responses import HTMLResponse
+
+    from temporalize.generate.packet import packet_html
+
+    run = await asyncio.to_thread(_load, run_id)
+    if isinstance(run, JSONResponse):
+        return run
+    if not run.get("results"):
+        return _error("The review packet is ready when the run finishes.", 409)
+    try:
+        return HTMLResponse(await asyncio.to_thread(packet_html, run))
+    except Exception as e:
+        logger.error(f"Packet page for {run_id} failed: {e}", exc_info=True)
+        return _error(f"Could not build the review packet: {e}", 500)
 
 
 class PushBody(BaseModel):

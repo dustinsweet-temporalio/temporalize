@@ -105,9 +105,9 @@ class TemporalizeActivities:
         self.client = client   # the Temporal client the worker uses (to follow the index sync)
 
     def all(self) -> list[Callable]:
-        return [self.wait_for_index, self.analyze_scope, self.draft_plan, self.prepare_workspace,
-                self.generate_code, self.run_checks, self.review_code, self.fix_code, self.run_scenario,
-                self.finalize_results, self.mark_run, self.run_state]
+        return [self.wait_for_index, self.analyze_scope, self.draft_plan, self.revise_design, self.mark_design_edit,
+                self.prepare_workspace, self.generate_code, self.run_checks, self.review_code, self.fix_code,
+                self.run_scenario, self.finalize_results, self.mark_run, self.run_state]
 
     # ------------------------------------------------------------------
     # Screen 5
@@ -153,8 +153,13 @@ class TemporalizeActivities:
             from temporalize.assess import report_processes
 
             index = run["repo"]["index"]
-            files = get_mongo_client()[f"{_prefix()}_{index}"][FILE_SUMMARIES_COLLECTION].estimated_document_count()
-            store.set_stage(inp.run_id, stage, "index", "done", f"{files} of {files}")
+            db = get_mongo_client()[f"{_prefix()}_{index}"]
+            files = db[FILE_SUMMARIES_COLLECTION].estimated_document_count()
+            folders = db["folder_summaries"].estimated_document_count()
+            store.set_stage(inp.run_id, stage, "index", "done", f"{files} files, {folders} folders")
+            store.update_run(inp.run_id, {"assessment.index": {
+                "phase": "done", "files_done": files, "files_total": files, "folders_done": folders,
+                "folders_total": folders, "updated_at": store.now()}})
             try:
                 n = len(report_processes(_report(run)))
             except ApplicationError as e:
@@ -180,6 +185,9 @@ class TemporalizeActivities:
         if p is None:
             store.set_stage(run_id, stage, "index", "running", "Waiting for the indexer worker")
             return
+        counts = index_counts(p)
+        if counts:
+            store.update_run(run_id, {"assessment.index": {**counts, "updated_at": store.now()}})
         if p.phase in ("STARTING", "PLAN"):
             store.set_stage(run_id, stage, "index", "running", "Comparing the repository with the index")
         elif p.phase == "FILES":
@@ -209,11 +217,13 @@ class TemporalizeActivities:
             return analyze_scope(_llm(inp.run_id), run, _report(run))
 
         scope = _sync(go)
-        n = len(scope["variants"])
-        store.set_stage(inp.run_id, stage, "variants", "done", f"{n} variant{'' if n == 1 else 's'}")
+        n = len(scope["systems"])
+        store.set_stage(inp.run_id, stage, "variants", "done",
+                        f"{n} system{'' if n == 1 else 's'} it talks to" if n else "Done")
         any_ok = any(p["verdict_class"] != "not suitable" for p in scope["processes"])
-        store.update_run(inp.run_id, {"scope": scope, "status": "scoping" if any_ok else "not_suitable"})
-        return StepResult(count=n)
+        store.update_run(inp.run_id, {"scope": scope, "status": "scoping" if any_ok else "not_suitable",
+                                      "step": max(3, run.get("step") or 3)})
+        return StepResult(count=len(scope["processes"]))
 
     # ------------------------------------------------------------------
     # Screen 6
@@ -228,6 +238,37 @@ class TemporalizeActivities:
         plan = _sync(lambda: draft_plan(_llm(inp.run_id), run, _process(run)))
         store.update_run(inp.run_id, {"plan": plan, "status": "plan_ready"})
         return StepResult(count=len(plan["claims"]))
+
+    @activity.defn(name=C.REVISE_DESIGN)
+    def revise_design(self, inp: RunInput) -> StepResult:
+        """Apply the user's design change request (screen 6 "Make edits"), with the skill and the docs."""
+        from temporalize.assess import design_poc
+
+        run = _run_doc(inp.run_id)
+        plan = run.get("plan") or {}
+        edit = plan.get("design_edit") or {}
+        request = (edit.get("request") or "").strip()
+        if not request or edit.get("status") == "done":
+            return StepResult()
+        store.update_run(inp.run_id, {"plan.design_edit.status": "revising", "plan.design_edit.started_at": store.now()})
+        design, research = _sync(lambda: design_poc(_llm(inp.run_id), run, _process(run), plan, request,
+                                                     plan.get("design")))
+        fresh = _run_doc(inp.run_id)
+        latest = (fresh.get("plan") or {}).get("design_edit") or {}
+        edits = list((fresh.get("plan") or {}).get("design_edits") or [])
+        edits.append({"request": request, "note": design.get("change_note", ""), "at": store.now()})
+        fields = {"plan.design": design, "plan.design_edits": edits, "plan.approved.design": False,
+                  "plan.research.design_edit": research}
+        # A request typed while this one ran stays pending (the workflow revises again); otherwise this one is done.
+        if (latest.get("request") or "").strip() == request:
+            fields["plan.design_edit"] = {"status": "done", "request": "", "finished_at": store.now()}
+        store.update_run(inp.run_id, fields)
+        return StepResult()
+
+    @activity.defn(name=C.MARK_DESIGN_EDIT)
+    def mark_design_edit(self, inp: MarkInput) -> StepResult:
+        store.update_run(inp.run_id, {"plan.design_edit.status": "failed", "plan.design_edit.error": inp.error or None})
+        return StepResult()
 
     # ------------------------------------------------------------------
     # Screen 7
@@ -268,7 +309,7 @@ class TemporalizeActivities:
             return StepResult(ok=False, count=out.get("turns", 0))
         n = len(out.get("files_changed") or [])
         store.set_stage(inp.run_id, GEN, "scaffold", "done", f"{n} file{'' if n == 1 else 's'}, {out.get('turns', 0)} turns")
-        store.update_run(inp.run_id, {"generate.summary": out.get("summary", "")})
+        store.update_run(inp.run_id, {"generate.summary": out.get("summary", ""), "generate.research": out.get("research") or {}})
         return StepResult(count=n)
 
     @activity.defn(name=C.RUN_CHECKS)
@@ -375,7 +416,7 @@ class TemporalizeActivities:
         scenarios = (run.get("generate") or {}).get("scenarios") or {}
         from temporalize.settings import run_settings
 
-        results = _sync(build_results, run, scenarios, run_settings(run))
+        results = _sync(build_results, run, scenarios, run_settings(run), _llm(inp.run_id))
         store.update_run(inp.run_id, {"results": results, "status": "done", "step": 8,
                                       "generate.finished_at": store.now()})
         return StepResult()
@@ -397,6 +438,27 @@ class TemporalizeActivities:
             return StepResult()
         store.update_run(inp.run_id, {"status": inp.status, "error": inp.error or None})
         return StepResult()
+
+
+def index_counts(p) -> dict | None:
+    """Live file and folder counts from the sync's progress query (screen 3): done and total of each."""
+    plan = p.plan
+    if plan is None or p.phase in ("STARTING", "PLAN"):
+        return None
+    files_total = plan.n_files
+    folders_total = sum(level.count for level in plan.levels) if plan.levels else None
+    if p.phase == "FILES":
+        files_done, folders_done = p.done, 0
+    elif p.phase == "LENS_REFRESH":
+        files_done, folders_done = files_total, 0
+    elif p.phase == "FOLDERS":
+        files_done, folders_done = files_total, p.done
+        folders_total = p.total or folders_total
+    else:  # REPO, PERSIST, FINALIZE, MIRROR, REPORT, ...
+        files_done, folders_done = files_total, folders_total or 0
+    return {"phase": p.phase.lower(), "mode": plan.mode, "files_done": files_done, "files_total": files_total,
+            "folders_done": folders_done, "folders_total": folders_total, "repo_files": plan.n_snapshot_files or None,
+            "unchanged": plan.n_unchanged}
 
 
 def _report_progress(index: str, since: str) -> dict | None:

@@ -133,7 +133,9 @@ def plan_markdown(run: dict, process: dict) -> str:
 
     design = plan.get("design") or process.get("design") or {}
     lines += ["## Approved design", ""]
-    if design.get("summary"):
+    if design.get("summary_text"):
+        lines += [design["summary_text"], ""]
+    elif design.get("summary"):
         lines += [design["summary"], ""]
     for el in design.get("elements") or []:
         files = ", ".join(el.get("files") or [])
@@ -144,6 +146,19 @@ def plan_markdown(run: dict, process: dict) -> str:
         lines += ["", "Stays outside Temporal:", ""] + [f"- {s}" for s in design["stays"]]
     if design.get("why"):
         lines += ["", f"Why: {design['why']}"]
+    if design.get("decisions"):
+        lines += ["", "Design decisions (follow them; the cites are where they come from):", ""]
+        lines += [f"- {d.get('decision')}: {d.get('reason', '')}" + (f" [{', '.join(d['cites'])}]" if d.get("cites") else "")
+                  for d in design["decisions"]]
+    if design.get("questions"):
+        lines += ["", "Open questions (make a sensible choice, note it in temporal-poc/README.md):", ""]
+        lines += [f"- {q}" for q in design["questions"]]
+    research = plan.get("research") or {}
+    if research:
+        lines += ["", "The design was made with Temporal's temporal-developer skill"
+                  + (f" ({', '.join(research.get('skill_read') or [])})" if research.get("skill_read") else "")
+                  + " and the Temporal Docs MCP. You have the same tools: `read_temporal_skill` and "
+                  "`search_temporal_docs`."]
     lines.append("")
 
     td = plan.get("testdata") or {}

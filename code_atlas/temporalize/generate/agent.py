@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from temporalize.generate.checks import poc_env
 from temporalize.generate.workspace import WorkspaceError, git, safe_path
+from temporalize.research import READ_SKILL_TOOL, SEARCH_DOCS_TOOL, Research
 
 OUTPUT_CHARS = 8000
 READ_CHARS = 60_000
@@ -50,6 +51,8 @@ TOOLS: list[dict[str, Any]] = [
      "input_schema": {"type": "object", "properties": {
          "command": {"type": "string"}, "timeout_seconds": {"type": "integer", "description": "At most 300 (default 120)"}},
          "required": ["command"]}},
+    READ_SKILL_TOOL,
+    SEARCH_DOCS_TOOL,
     {"name": "finish", "description": "Stop: the work is done (or cannot go further). Summarize what you built and what was verified.",
      "input_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}},
 ]
@@ -62,6 +65,7 @@ class AgentResult:
     finished: bool                  # the model called finish
     files_changed: list[str] = field(default_factory=list)
     done: bool = True               # False: paused at the call's budget; call again to carry on
+    research: dict = field(default_factory=dict)   # skill files read and docs searches made (research.py)
 
 
 def sessions_dir(workspace: Path) -> Path:
@@ -98,12 +102,15 @@ def _blocks(content) -> list[dict[str, Any]]:
 
 
 class Tools:
-    def __init__(self, workspace: Path, env: dict[str, str]) -> None:
+    def __init__(self, workspace: Path, env: dict[str, str], research: Research | None = None) -> None:
         self.ws = workspace.resolve()
         self.env = env
         self.written: list[str] = []
+        self.research = research or Research(max_searches=12)   # the temporal-developer skill and the Docs MCP
 
     def handle(self, name: str, args: dict[str, Any]) -> str:
+        if self.research.handles(name):
+            return self.research.handle(name, args)
         try:
             if name == "list_files":
                 return self.list_files(args.get("path") or ".", int(args.get("depth") or 3))
@@ -237,6 +244,10 @@ def run_agent(llm, workspace: Path, system: str, task: str, heartbeat: Callable[
                             "turn": 0, "summary": "", "finished": False, "over": False, "written": []}
     messages: list[dict[str, Any]] = state["messages"]
     tools.written = list(state.get("written") or [])
+    used_before = state.get("research") or {}
+    tools.research.skill_read = list(used_before.get("skill_read") or [])
+    tools.research.queries = list(used_before.get("docs_queries") or [])
+    tools.research.urls = list(used_before.get("docs_urls") or [])
     started, used = time.monotonic(), 0
     while not (state["finished"] or state["over"]) and state["turn"] < max_turns:
         if (turn_budget and used >= turn_budget) or (time_budget and time.monotonic() - started >= time_budget):
@@ -259,7 +270,7 @@ def run_agent(llm, workspace: Path, system: str, task: str, heartbeat: Callable[
                                  "(write large files in parts with replace_in_file)."}]})
             else:
                 state["over"] = True
-            _save(path, {**state, "written": tools.written})
+            _save(path, {**state, "written": tools.written, "research": tools.research.record()})
             continue
         results = []
         for block in calls:
@@ -272,7 +283,7 @@ def run_agent(llm, workspace: Path, system: str, task: str, heartbeat: Callable[
         if turn == max_turns - 3 and not state["finished"]:
             results.append({"type": "text", "text": "Three turns left: get to a working state and call finish."})
         messages.append({"role": "user", "content": results})
-        _save(path, {**state, "written": tools.written})
+        _save(path, {**state, "written": tools.written, "research": tools.research.record()})
     done = state["finished"] or state["over"] or state["turn"] >= max_turns
     changed = []
     try:
@@ -282,4 +293,5 @@ def run_agent(llm, workspace: Path, system: str, task: str, heartbeat: Callable[
         pass
     changed = changed or tools.written
     return AgentResult(summary=state["summary"] or ("The agent stopped without a summary." if done else ""),
-                       turns=state["turn"], finished=state["finished"], files_changed=changed, done=done)
+                       turns=state["turn"], finished=state["finished"], files_changed=changed, done=done,
+                       research=tools.research.record())

@@ -30,13 +30,15 @@ class Mocks:
     """Activities by name that record their calls; behavior set per test."""
 
     def __init__(self, review_counts=(2, 1, 1), failing_scenario: str | None = None, fail_at: str | None = None,
-                 generate_chunks: int = 1):
+                 generate_chunks: int = 1, revise_fails: bool = False):
         self.calls: list[tuple] = []
         self.review_counts = list(review_counts)
         self.failing_scenario = failing_scenario
         self.fail_at = fail_at
         self.marked: list[MarkInput] = []
         self.generate_chunks = generate_chunks
+        self.revise_fails = revise_fails
+        self.edit_marked: list[MarkInput] = []
 
     def _record(self, name, inp):
         self.calls.append((name, getattr(inp, "n", None), getattr(inp, "kind", None), getattr(inp, "scenario", None)))
@@ -84,8 +86,23 @@ class Mocks:
             self.marked.append(inp)
             return StepResult()
 
+        @activity.defn(name=C.REVISE_DESIGN)
+        async def revise(inp: RunInput) -> StepResult:
+            self._record(C.REVISE_DESIGN, inp)
+            if self.revise_fails:
+                from temporalio.exceptions import ApplicationError
+
+                raise ApplicationError("model refused", type=C.LLM_PERMANENT, non_retryable=True)
+            return StepResult()
+
+        @activity.defn(name=C.MARK_DESIGN_EDIT)
+        async def mark_edit(inp: MarkInput) -> StepResult:
+            self.edit_marked.append(inp)
+            return StepResult()
+
         return [simple(C.WAIT_FOR_INDEX), simple(C.ANALYZE_SCOPE), simple(C.DRAFT_PLAN),
-                simple(C.PREPARE_WORKSPACE), simple(C.FINALIZE_RESULTS), generate, checks, review, fix, scenario, mark]
+                simple(C.PREPARE_WORKSPACE), simple(C.FINALIZE_RESULTS), generate, checks, review, fix, scenario, mark,
+                revise, mark_edit]
 
 
 async def _run(env, mocks: Mocks, signal: bool = True):
@@ -175,3 +192,62 @@ async def test_generation_runs_in_chunks_until_the_agent_is_done(tz_env):
     assert sum(1 for c in mocks.calls if c[0] == C.GENERATE_CODE) == 3
     assert [c[0] for c in mocks.calls].index(C.RUN_CHECKS) > max(
         i for i, c in enumerate(mocks.calls) if c[0] == C.GENERATE_CODE)
+
+
+async def _at(handle, phase: str) -> None:
+    for _ in range(200):
+        if await handle.query(TemporalizeWorkflow.progress) == phase:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"never reached {phase}")
+
+
+async def test_design_edits_are_applied_before_approval(tz_env):
+    mocks = Mocks(review_counts=(0,))
+    queue = f"tz-{uuid.uuid4().hex[:8]}"
+    async with Worker(tz_env.client, task_queue=queue, workflows=[TemporalizeWorkflow], activities=mocks.all()):
+        handle = await tz_env.client.start_workflow(TemporalizeWorkflow.run, RunInput("r-0004"),
+                                                    id=f"tz-test-{uuid.uuid4().hex[:8]}", task_queue=queue)
+        await _at(handle, "WAIT_SCOPE")
+        await handle.signal(TemporalizeWorkflow.scope_confirmed)
+        await _at(handle, "WAIT_APPROVAL")
+        await handle.signal(TemporalizeWorkflow.design_edit_requested)
+        for _ in range(200):
+            if sum(1 for c in mocks.calls if c[0] == C.REVISE_DESIGN) == 1:
+                break
+            await asyncio.sleep(0.05)
+        await _at(handle, "WAIT_APPROVAL")
+        await handle.signal(TemporalizeWorkflow.design_edit_requested)
+        for _ in range(200):
+            if sum(1 for c in mocks.calls if c[0] == C.REVISE_DESIGN) == 2:
+                break
+            await asyncio.sleep(0.05)
+        await _at(handle, "WAIT_APPROVAL")
+        assert C.PREPARE_WORKSPACE not in [c[0] for c in mocks.calls]   # edits never start the build
+        await handle.signal(TemporalizeWorkflow.plan_approved)
+        with tz_env.auto_time_skipping_disabled():
+            assert await handle.result() == "done"
+    names = [c[0] for c in mocks.calls]
+    assert names.count(C.REVISE_DESIGN) == 2 and names.index(C.REVISE_DESIGN) < names.index(C.PREPARE_WORKSPACE)
+
+
+async def test_a_failed_design_edit_leaves_the_run_waiting(tz_env):
+    mocks = Mocks(review_counts=(0,), revise_fails=True)
+    queue = f"tz-{uuid.uuid4().hex[:8]}"
+    async with Worker(tz_env.client, task_queue=queue, workflows=[TemporalizeWorkflow], activities=mocks.all()):
+        handle = await tz_env.client.start_workflow(TemporalizeWorkflow.run, RunInput("r-0005"),
+                                                    id=f"tz-test-{uuid.uuid4().hex[:8]}", task_queue=queue)
+        await _at(handle, "WAIT_SCOPE")
+        await handle.signal(TemporalizeWorkflow.scope_confirmed)
+        await _at(handle, "WAIT_APPROVAL")
+        await handle.signal(TemporalizeWorkflow.design_edit_requested)
+        for _ in range(200):
+            if mocks.edit_marked:
+                break
+            await asyncio.sleep(0.05)
+        await _at(handle, "WAIT_APPROVAL")
+        assert [m.status for m in mocks.edit_marked] == ["failed"] and "model refused" in mocks.edit_marked[0].error
+        assert mocks.marked == []                                        # the run itself did not fail
+        await handle.cancel()
+        with pytest.raises(WorkflowFailureError):
+            await handle.result()

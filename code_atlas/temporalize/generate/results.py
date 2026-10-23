@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import zipfile
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from temporalize.generate.workspace import (
     run_id_of,
     workspace_path,
 )
+
+logger = logging.getLogger("code_atlas.temporalize.results")
 
 RESULTS = ("match", "intended", "new", "mismatch")
 BASE_LIMITATIONS = [
@@ -109,7 +112,7 @@ def leftover_findings(run: dict) -> list[dict]:
     return [f for f in last.get("findings") or [] if f.get("severity") in ("high", "medium")]
 
 
-def build_results(run: dict, scenarios: dict[str, dict], settings: dict) -> dict:
+def build_results(run: dict, scenarios: dict[str, dict], settings: dict, llm=None) -> dict:
     from temporalize.settings import temporal_target, workflow_url
 
     ws = workspace_path(run)
@@ -134,7 +137,7 @@ def build_results(run: dict, scenarios: dict[str, dict], settings: dict) -> dict
     if leftovers:
         limitations.append(f"{_plural(len(leftovers), 'review finding')} left after the last review pass (listed below).")
 
-    return {
+    results = {
         "outcomes": [
             {"id": "runnable", "label": "Runnable evaluation", "ok": bool(smoke.get("ok"))},
             {"id": "resilience", "label": "Resilience demonstrated", "ok": bool(resilience.get("ok"))},
@@ -154,6 +157,21 @@ def build_results(run: dict, scenarios: dict[str, dict], settings: dict) -> dict
         "smoke_workflow_id": smoke_id,
         "temporal_ui_url": workflow_url(target, smoke_id),
     }
+    results["narrative"] = _narrative(llm, run, results)
+    return results
+
+
+def _narrative(llm, run: dict, results: dict) -> dict:
+    """The packet's write-up (packet.py); best effort, so the results never fail on it."""
+    from temporalize.generate.packet import fallback_narrative, narrative
+
+    if llm is not None:
+        for attempt in (1, 2):
+            try:
+                return narrative(llm, run, results)
+            except Exception as e:
+                logger.warning(f"Packet narrative, attempt {attempt}, failed: {type(e).__name__}: {str(e)[:200]}")
+    return fallback_narrative(run, results)
 
 
 # ----------------------------------------------------------------------
@@ -219,6 +237,9 @@ def packet(run: dict) -> bytes:
     poc = ws / POC_DIR
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        from temporalize.generate.packet import packet_html
+
+        z.writestr("packet.html", packet_html(run))
         z.writestr("README.md", packet_readme(run))
         z.writestr("diff.patch", diff(run) if ws.exists() else "")
         z.writestr("results.json", json.dumps(run.get("results") or {}, indent=2, default=str))

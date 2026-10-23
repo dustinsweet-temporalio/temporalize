@@ -83,3 +83,44 @@ class RunLLM:
             return model_cls.model_validate(json.loads(text))
         except Exception as e:
             raise LLMTransientError(f"The model's answer did not match the expected format: {type(e).__name__}") from e
+
+    def structured_with_tools(self, system: str, prompt: str, model_cls: type[T], tools: list[dict],
+                              handle, max_tool_calls: int = 12, max_tokens: int = DEFAULT_MAX_TOKENS) -> T:
+        """
+        A bounded tool loop (`handle(name, input) -> text`), then the answer constrained to `model_cls`'s
+        schema, as the indexer's generate_with_tools does. Calls past `max_tool_calls` are told to answer.
+        """
+        from semantic_ingress.core.llm_client import LLMTransientError
+        from semantic_ingress.core.llm_schema import to_llm_schema
+
+        schema = {"format": {"type": "json_schema", "schema": to_llm_schema(model_cls)}}
+        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        calls = 0
+        for _ in range(max_tool_calls + 4):
+            message = self.create(system=system, max_tokens=max_tokens, messages=messages, tools=tools,
+                                  output_config=dict(schema))
+            if message.stop_reason != "tool_use":
+                text = next((b.text for b in message.content if b.type == "text"), None)
+                if text is None or message.stop_reason == "max_tokens":
+                    raise LLMTransientError(f"No complete answer (stop_reason={message.stop_reason})")
+                try:
+                    return model_cls.model_validate(json.loads(text))
+                except Exception as e:
+                    raise LLMTransientError(
+                        f"The model's answer did not match the expected format: {type(e).__name__}") from e
+            messages.append({"role": "assistant", "content": message.content})
+            results = []
+            for block in message.content:
+                if block.type != "tool_use":
+                    continue
+                if calls >= max_tool_calls:
+                    output = "Tool limit reached. Answer now with what you have."
+                else:
+                    calls += 1
+                    try:
+                        output = handle(block.name, block.input)
+                    except Exception as e:  # tell the model, keep going
+                        output = f"Tool error: {e}"
+                results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+            messages.append({"role": "user", "content": results})
+        raise LLMTransientError("The tool loop did not finish.")

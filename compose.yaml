@@ -178,6 +178,9 @@ services:
     volumes:
       - tz-data:/data/tz
       - source-data:/data/source:ro
+      # Temporal Docs MCP sign-in (scripts/mcp_login.py): the design step and the coding agent search the
+      # docs. Read-write: the client saves a rotated refresh token.
+      - ${CODE_ATLAS_CONFIG_DIR:-${HOME}/.config/code-atlas}:/run/code-atlas
       - ${REPOS_ROOT:-${HOME}}:${REPOS_ROOT:-${HOME}}:ro
     depends_on:
       mongo:

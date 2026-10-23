@@ -1,7 +1,11 @@
 """
-Rules for screens 3 and 4: the focus areas the scan supports, and the success criteria
-suggested from the scan and the brief. No model calls; every suggestion says why it is
-there (the finding or the brief answer it came from).
+Rules for screens 4 and 5: the focus areas the assessment supports, and the success
+criteria suggested from it and the brief. No model calls; every suggestion says why it
+is there (the finding or the brief answer it came from).
+
+The external systems come from Code Atlas (the scope analysis names the products the
+code talks to, such as ClockShark or Gmail); before the assessment, or without it, the
+local scan's imports stand in.
 
 P0 is required, P1 is nice to have (the Mutual Action Plan labels).
 """
@@ -22,9 +26,29 @@ EXTERNAL = ("browser", "ai", "workspace", "payments", "cloud", "ssh", "messaging
 LOGIN = ("browser", "ssh")
 
 
-def _external(scan: dict) -> list[dict]:
-    """External integrations, most telling first (the scan sorts them by category)."""
-    return [t for t in scan.get("integrations", []) if t.get("category") in EXTERNAL]
+# A system kind from the scope analysis -> the integration category the rules use.
+SYSTEM_CATEGORY = {"web_app": "browser", "ai": "ai", "email": "email", "spreadsheet": "workspace", "storage": "cloud",
+                   "chat": "messaging", "notify": "notify", "api": "http", "payments": "payments", "cloud": "cloud",
+                   "ssh": "ssh", "queue": "queue", "database": "database", "other": "http"}
+ORDER = ["browser", "ssh", "ai", "payments", "workspace", "email", "messaging", "notify", "http", "cloud", "queue",
+         "database"]
+
+
+def tools_from_systems(systems: list[dict], process_key: str | None = None) -> list[dict]:
+    """The systems Code Atlas named (for one process, when given) in the shape the rules read."""
+    picked = [x for x in systems if not process_key or not x.get("processes") or process_key in x["processes"]]
+    tools = [{"id": x["name"].lower(), "name": x["name"], "category": SYSTEM_CATEGORY.get(x.get("kind"), "http"),
+              "files": [r.split("@")[0] for r in x.get("refs") or []]} for x in picked]
+    return sorted(tools, key=lambda t: ORDER.index(t["category"]) if t["category"] in ORDER else len(ORDER))
+
+
+def _tools(scan: dict, systems: list[dict] | None) -> list[dict]:
+    return systems if systems is not None else scan.get("integrations", [])
+
+
+def _external(scan: dict, systems: list[dict] | None = None) -> list[dict]:
+    """External integrations, most telling first."""
+    return [t for t in _tools(scan, systems) if t.get("category") in EXTERNAL]
 
 
 def _names(tools: list[dict], article: bool = False) -> str:
@@ -61,11 +85,11 @@ def _schedule_finding(scan: dict) -> tuple[str, str] | None:
     return None
 
 
-def focus_options(scan: dict) -> list[dict]:
-    """The four focus areas, each with what the scan found for it and whether it has evidence."""
-    external = _external(scan)
+def focus_options(scan: dict, systems: list[dict] | None = None) -> list[dict]:
+    """The four focus areas, each with what the assessment found for it and whether it has evidence."""
+    external = _external(scan, systems)
     runs = _runs(scan)
-    notify = [t for t in scan.get("integrations", []) if t.get("category") in ("notify", "email", "messaging")]
+    notify = [t for t in _tools(scan, systems) if t.get("category") in ("notify", "email", "messaging")]
     schedule = _schedule_finding(scan)
     options = {
         "recover": (f"{_names(external)} found", True) if external
@@ -84,13 +108,14 @@ def _criterion(id: str, text: str, why: str, priority: str = "P0", on: bool = Tr
     return {"id": id, "text": text, "why": why, "priority": priority, "on": on, "custom": False}
 
 
-def suggest_criteria(scan: dict, brief: dict, existing: list[dict] | None = None) -> list[dict]:
+def suggest_criteria(scan: dict, brief: dict, existing: list[dict] | None = None,
+                     systems: list[dict] | None = None) -> list[dict]:
     """
-    The suggested criteria for this scan and brief. With `existing`, the user's choices are
+    The suggested criteria for this assessment and brief. With `existing`, the user's choices are
     kept: on/off, priority and edited text for criteria that still apply, and custom criteria.
     """
     focus = set(brief.get("focus") or [])
-    external = _external(scan)
+    external = _external(scan, systems)
     out = [_criterion("restart", "Survives a worker restart without redoing finished work", "Always included")]
     if external:
         login = any(t["category"] in LOGIN for t in external)

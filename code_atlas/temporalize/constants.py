@@ -18,6 +18,7 @@ def workflow_id(run_id: str) -> str:
 # Signals from the UI (the decision itself is stored on the run document first).
 SCOPE_SIGNAL = "scope_confirmed"
 PLAN_SIGNAL = "plan_approved"
+DESIGN_EDIT_SIGNAL = "design_edit_requested"   # screen 6 "Make edits": the request is on the run document
 PROGRESS_QUERY = "progress"
 
 # Activity names (explicit, so renaming a method never breaks a running workflow).
@@ -33,6 +34,8 @@ RUN_SCENARIO = "tz_run_scenario"
 FINALIZE_RESULTS = "tz_finalize_results"
 MARK_RUN = "tz_mark_run"
 RUN_STATE = "tz_run_state"
+REVISE_DESIGN = "tz_revise_design"
+MARK_DESIGN_EDIT = "tz_mark_design_edit"
 
 # ApplicationError types
 TZ_INVALID = "TZ_INVALID"           # the run cannot go on (missing report, not suitable, bad input)

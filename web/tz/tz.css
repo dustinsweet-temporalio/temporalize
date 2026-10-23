@@ -351,3 +351,34 @@ details.pass summary{cursor:pointer}
 .beh-edit{flex:1}
 .beh-act{display:flex;gap:10px;flex:none;font-size:12.5px}
 .beh.dropped .beh-txt > span:first-child{text-decoration:line-through;color:var(--ink-3)}
+
+/* Plain-language summaries, the recommendation, the approve box, live counts, design edits */
+.narr{font-size:14.5px;line-height:1.55;color:var(--ink);margin:0 0 10px;max-width:68ch}
+.narr.lead{font-size:15.5px;margin:4px 0 14px}
+.rec{border-left:3px solid var(--focus);background:var(--focus-bg);padding:10px 12px;margin:8px 0 4px;font-size:14px}
+.rec p{margin:4px 0 0;line-height:1.5}
+.tag .via{color:var(--ink-3)}
+.mets.live .met b{font-variant-numeric:tabular-nums;font-size:17px}
+.mets.live{grid-template-columns:repeat(3,minmax(0,1fr))}
+.approve-box{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;border:1px solid var(--line);
+  border-radius:8px;padding:10px 12px;margin-top:16px;background:var(--soft)}
+.approve-box .narr{margin:0;flex:1 1 320px}
+.design-edit{margin-top:12px}
+.design-edit .sec-foot{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+@media (max-width:640px){.mets.live{grid-template-columns:1fr 1fr}}
+
+/* Screen 8: the review packet */
+.packet .pk-title{font-size:26px;line-height:1.2;margin:4px 0 8px;letter-spacing:-.01em}
+.pk-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 14px;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:12px 0 6px}
+.pk-facts span{display:block;font-size:12px;color:var(--ink-3)}.pk-facts b{font-weight:600;font-size:13.5px;overflow-wrap:anywhere}
+.pk-sec{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}
+.pk-sec > h3{font-size:19px;margin:0 0 4px;display:flex;align-items:baseline;gap:10px}
+.pk-n{font-size:13px;color:var(--ink-3);font-weight:500}
+.pk-quote{border-left:3px solid var(--ink);margin:8px 0 10px;padding:2px 12px;font-size:15.5px}
+.pk-callout{border:1px solid var(--sent);border-radius:8px;padding:8px 12px;margin-top:10px;font-size:13.5px}
+.pk-callout b{display:block;margin-bottom:2px}
+.pk-std{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
+.pk-std div{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:7px 0;font-size:13.5px}
+.i{color:var(--sent)}
+.na{color:var(--ink-3)}
+@media (max-width:640px){.pk-facts{grid-template-columns:1fr 1fr}.pk-std{grid-template-columns:1fr}}

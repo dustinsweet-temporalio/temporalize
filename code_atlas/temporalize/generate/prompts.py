@@ -46,9 +46,13 @@ Scenarios (each starts with `StubLog.reset()` and sets failures on or off with `
 
 Every criterion in PLAN.md should be reported by at least one scenario (passed true/false with evidence). Criteria about scale, latency or cost cannot be proven here: report them passed false with evidence "Not provable in a local stub-mode run".
 
+## Temporal guidance: the skill and the docs
+
+You have Temporal's temporal-developer skill (`read_temporal_skill`) and the Temporal docs (`search_temporal_docs`, the Temporal Docs MCP). Before writing the workflow and activities, read `references/python/python.md`, `references/python/patterns.md`, `references/python/determinism.md`, `references/python/gotchas.md` and `references/python/testing.md`, and follow them. When the plan, the skill and the SDK leave a question open (an API, a limit, a Schedule spec), search the docs instead of guessing. The design in PLAN.md was made the same way; follow its decisions.
+
 ## How to work
 
-1. Read `temporal-poc/PLAN.md`, `temporal-poc/tz_harness.py`, `temporal-poc/.tz/process.json` (the process card: steps, refs, design) and the original source files it cites. Look at `temporal-poc/testdata/`.
+1. Read `temporal-poc/PLAN.md`, `temporal-poc/tz_harness.py`, `temporal-poc/.tz/process.json` (the process card: steps, refs, design) and the original source files it cites. Look at `temporal-poc/testdata/`. Read the skill references above.
 2. Write the files. Prefer several focused files over one huge write.
 3. Run `python -c "import stubs, activities, workflows"` from temporal-poc, then each scenario in order (`python temporal-poc/validate.py side_by_side --out temporal-poc/.tz/side_by_side.json`, then resilience, replay, smoke), and fix until all four pass. Look at the JSON each one writes. Never fake a result: rows must come from what actually ran.
 4. Call `finish` with a short summary: what the workflow does, which files changed, and the scenario results.

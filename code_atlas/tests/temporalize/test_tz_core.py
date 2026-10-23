@@ -64,11 +64,13 @@ def test_report_processes_skip_failures_and_keep_order():
     assert [(p["key"], p["name"]) for p in assess.report_processes(report)] == [("p1", "A"), ("p3", "C")]
 
 
-def test_the_strip_says_nothing_was_sent_before_the_assessment():
-    run = {"status": "ready", "step": 4, "brief": {"notes": "call notes"}}
-    assert api._now_text(run) == "Ready to start"
+def test_the_strip_says_what_was_sent_and_when():
+    run = {"status": "ready", "step": 2, "brief": {"notes": "call notes"}}
+    assert api._now_text(run) == "Ready to start the assessment"
     assert api._sent(run) == []
     run["assessment"] = {"started_at": "now"}
+    assert api._sent(run) == ["Source files"]          # the brief comes after Code Atlas's recommendation
+    run["scope"] = {"confirmed": True}
     assert api._sent(run) == ["Source files", "brief", "notes"]
 
 
