@@ -1,4 +1,4 @@
-# Code Atlas
+# Temporalize
 
 **Temporalize** (the UI at <http://localhost:8090>) takes an AE or SA from a repository to a running Temporal proof of concept with evidence, in eight screens: setup, a local scan, focus, success criteria, then (from **Start assessment**, the first point where anything leaves your machine) the Code Atlas report and scope, an approvable plan, generation with review and validation, and results with a review packet. See [docs/TEMPORALIZE.md](docs/TEMPORALIZE.md). The Code Atlas UI below is at <http://localhost:8090/atlas>.
 
