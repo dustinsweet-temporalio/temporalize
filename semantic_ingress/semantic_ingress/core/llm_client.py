@@ -74,6 +74,15 @@ def classify_llm_error(e: Exception) -> LLMError:
 _pricing = {"input": 2.00, "output": 10.00, "cache_read": 0.05}
 
 
+# Called with config.count_key after every Messages API call (semantic_ingress.runtime installs it).
+_call_counter: Callable[[str], None] | None = None
+
+
+def set_call_counter(counter: Callable[[str], None] | None) -> None:
+    global _call_counter
+    _call_counter = counter
+
+
 def set_pricing(config: LLMConfig) -> None:
     """Use the configured prices for cost estimates (LLMClient does this; so does the web UI's progress)."""
     _pricing["input"] = config.input_price_per_1m
@@ -346,8 +355,15 @@ class LLMClient:
         if self.config.thinking:
             params["thinking"] = {"type": self.config.thinking}
 
-        with self.client.messages.stream(**params) as stream:
-            message = stream.get_final_message()
+        try:
+            with self.client.messages.stream(**params) as stream:
+                message = stream.get_final_message()
+        finally:
+            if self.config.count_key and _call_counter is not None:
+                try:
+                    _call_counter(self.config.count_key)
+                except Exception as e:  # counting is best effort; never fail the call over it
+                    self.log.warning("call_count_failed", error=str(e))
 
         if message.stop_reason == "refusal":
             raise LLMPermanentError(f"Model refused the request: {getattr(message, 'stop_details', None)}")

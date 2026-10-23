@@ -12,3 +12,8 @@ pymongo>=4.10.1,<5
 # Chat sessions: Temporal workflows (same pin as the indexer) and Redis Streams for token streaming
 temporalio==1.34.0
 redis>=5.0,<7
+
+# Temporalize: secret scanning (screen 2) and the checks run on the generated POC (screen 7)
+detect-secrets>=1.5,<2
+ruff>=0.6
+mypy>=1.11

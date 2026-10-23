@@ -18,15 +18,17 @@ fails), the error is stored in the staging database for the UI to show, and the
 service tries again a minute later.
 """
 import asyncio
+import dataclasses
 from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
 from temporalio.client import Client
 
-from semantic_ingress.config import IngestionConfig, MongoConfig, TemporalConfig
+from semantic_ingress.config import FileFilterConfig, IngestionConfig, LLMConfig, MongoConfig, TemporalConfig
 from semantic_ingress.core.llm_client import LLMClient
 from semantic_ingress.preflight import run_preflight
+from semantic_ingress.runtime import apply_saved_settings, index_call_key, install_call_counter
 from semantic_ingress.storage import MongoStore
 from semantic_ingress.storage.staging_store import STAGING_DATABASE, WORKER_STATUS, StagingStore
 from semantic_ingress.temporal.activities import IndexActivities
@@ -47,6 +49,7 @@ class SyncWorkerService:
         self.temporal = TemporalConfig()
         self.store = MongoStore(MongoConfig(), prefix)
         self.status = self.store.client[STAGING_DATABASE][WORKER_STATUS]
+        install_call_counter(self.store.client)
         self._serving: dict[str, asyncio.Task] = {}   # repo_id -> its worker's task
         self._retry_at: dict[str, float] = {}
 
@@ -72,17 +75,29 @@ class SyncWorkerService:
                 continue
             if repo_id in self._serving or now < self._retry_at.get(repo_id, 0):
                 continue
-            self._serving[repo_id] = asyncio.create_task(self._serve(repo_id, repo_path))
+            self._serving[repo_id] = asyncio.create_task(self._serve(repo_id, repo_path, memo))
 
-    async def _serve(self, repo_id: str, repo_path: str) -> None:
-        """Run the repository's worker until its sync workflow closes."""
+    async def _serve(self, repo_id: str, repo_path: str, memo: dict) -> None:
+        """
+        Run the repository's worker until its sync workflow closes. Temporalize runs add
+        `model` and `exclude_extra` to the memo; every run's model calls are counted.
+        """
         log = logger.bind(repo_id=repo_id, repo_path=repo_path)
         try:
             if not Path(repo_path).is_dir():
                 raise ValueError(f"{repo_path} is not visible to the indexer worker. It must be under "
-                                 "REPOS_ROOT, which compose mounts into the worker and the app.")
+                                 "REPOS_ROOT (or the Temporalize clone folder), which compose mounts into "
+                                 "the worker and the app.")
+            await asyncio.to_thread(apply_saved_settings, self.store.client)
+            llm = dataclasses.replace(LLMConfig(), count_key=index_call_key(repo_id))
+            if memo.get("model"):
+                llm = dataclasses.replace(llm, model_id=memo["model"])
+            file_filter = FileFilterConfig()
+            if memo.get("exclude_extra"):
+                file_filter = dataclasses.replace(
+                    file_filter, exclude_patterns=file_filter.exclude_patterns + tuple(memo["exclude_extra"]))
             config = IngestionConfig(repo_path=Path(repo_path), output_dir=Path("/tmp"),
-                                     repo_id=repo_id, prefix=self.prefix)
+                                     repo_id=repo_id, prefix=self.prefix, llm=llm, file_filter=file_filter)
             preflight = await asyncio.to_thread(run_preflight, config, False)
             staging = StagingStore(self.store.client)
             staging.ensure_indexes()

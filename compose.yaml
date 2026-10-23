@@ -3,7 +3,8 @@
 #   cp .env.example .env      # then set ANTHROPIC_API_KEY
 #   docker compose up --build
 #
-# Open http://localhost:8090 and add a repository with "+ Add index" (or run
+# Open http://localhost:8090 for Temporalize (repository to running Temporal POC), or
+# http://localhost:8090/atlas for Code Atlas: add a repository with "+ Add index" (or run
 # ./scripts/index.sh /path/to/a/git/repo [name]). Compass Web, for browsing the stored
 # indexes: http://localhost:8096. Temporal UI (indexing runs): http://localhost:8233.
 # Indexing (`sync`) runs as a Temporal workflow on the `temporal` dev server below: the
@@ -25,6 +26,8 @@ x-app-env: &app-env
   # mounted read-only at the same path in the app and the worker, so host paths work as-is.
   REPOS_ROOT: ${REPOS_ROOT:-${HOME}}
   HOST_HOME: ${HOME}
+  # Temporalize: clones (/data/tz/clones) and POC workspaces (/data/tz/workspaces), the tz-data volume
+  TZ_DATA_DIR: /data/tz
 
 services:
   mongo:
@@ -73,6 +76,8 @@ services:
       - ${CODE_ATLAS_CONFIG_DIR:-${HOME}/.config/code-atlas}:/run/code-atlas
       # The folder picker and the "is a sync needed?" check read repositories here.
       - ${REPOS_ROOT:-${HOME}}:${REPOS_ROOT:-${HOME}}:ro
+      # Temporalize clones repositories here (read-write) and reads POC workspaces (diff, packet, push).
+      - tz-data:/data/tz
     depends_on:
       mongo:
         condition: service_healthy
@@ -149,6 +154,31 @@ services:
       - source-data:/data/source
       - ${CODE_ATLAS_CONFIG_DIR:-${HOME}/.config/code-atlas}:/run/code-atlas
       - ${REPOS_ROOT:-${HOME}}:${REPOS_ROOT:-${HOME}}:ro
+      # Repositories Temporalize cloned are indexed from here, at the same path as in the app.
+      - tz-data:/data/tz:ro
+    depends_on:
+      mongo:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
+  # Runs Temporalize runs (TemporalizeWorkflow, tz-<run>): screens 5-7 of the UI at /.
+  # It reads the repositories (clones, REPOS_ROOT) and the mirrored source, writes POC
+  # workspaces to tz-data, and runs the generated POC in stub mode against the Temporal
+  # target from the settings (by default the `temporal` dev server below).
+  tz-worker:
+    build: .
+    image: code-atlas:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *app-env
+    command: ["python", "-m", "temporalize.worker"]
+    stop_grace_period: 45s
+    volumes:
+      - tz-data:/data/tz
+      - source-data:/data/source:ro
+      - ${REPOS_ROOT:-${HOME}}:${REPOS_ROOT:-${HOME}}:ro
     depends_on:
       mongo:
         condition: service_healthy
@@ -194,6 +224,7 @@ volumes:
   mongo-data:
   source-data:
   temporal-data:
+  tz-data:
 
 networks:
   default:

@@ -51,3 +51,22 @@ def test_folder_schema_excludes_computed_subtree():
     assert all("subtree" not in obj["properties"] for obj in _objects(schema))
     # No free-form maps survive (the API cannot take them).
     assert all(obj["properties"] for obj in _objects(schema))
+
+
+def test_fields_named_like_schema_keywords_are_kept():
+    from pydantic import BaseModel
+
+    class Item(BaseModel):
+        title: str
+        default: str
+        pattern: str
+
+    class Outer(BaseModel):
+        items: list[Item]
+        title: str
+
+    schema = to_llm_schema(Outer)
+    assert schema["required"] == ["items", "title"] and "title" in schema["properties"]
+    item = schema["$defs"]["Item"]
+    assert item["required"] == ["title", "default", "pattern"]
+    assert "title" not in item["properties"]["title"]  # the keyword is still stripped from each field's schema

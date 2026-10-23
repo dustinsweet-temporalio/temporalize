@@ -92,6 +92,8 @@ class LLMConfig:
     cache_read_multiplier: float = field(
         default_factory=lambda: float(_env_str("INDEX_PRICE_CACHE_READ_MULTIPLIER", "0.05"))
     )
+    # Counter key for model calls (semantic_ingress.runtime); None: not counted.
+    count_key: Optional[str] = None
 
 
 # Files and folders that are never indexed. Overridable with INDEX_EXCLUDE (a

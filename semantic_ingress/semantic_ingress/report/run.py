@@ -6,10 +6,13 @@ The mode follows the repository lens status: none/adjacent -> suitability;
 full -> evaluation; partial -> both (processes that touch Temporal code are
 evaluated instead of investigated).
 """
+import copy
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 import structlog
 
@@ -48,6 +51,44 @@ CONVERSION_SECTIONS = ["gates", "values", "patterns", "conversion", "limits"]
 PROCESS_WORKERS = 4
 
 
+class ReportProgress:
+    """
+    What the report build is doing, for a UI to show while it runs (it takes minutes): the phase,
+    a line of detail, and each process's state (pending, investigating, scoring, writing, done,
+    failed). Sent to `sink` on every change; best effort, never fails the build.
+    """
+
+    def __init__(self, sink: Callable[[dict], None] | None) -> None:
+        self.sink = sink
+        self.lock = threading.Lock()
+        self.state: dict = {"phase": "starting", "detail": "", "processes": []}
+
+    def update(self, **fields) -> None:
+        with self.lock:
+            self.state.update(fields)
+            snapshot = copy.deepcopy(self.state)
+        self._send(snapshot)
+
+    def process(self, name: str, state: str) -> None:
+        with self.lock:
+            for p in self.state["processes"]:
+                if p["name"] == name:
+                    p["state"] = state
+            done = sum(1 for p in self.state["processes"] if p["state"] in ("done", "failed"))
+            total = len(self.state["processes"])
+            self.state["detail"] = f"Investigating processes: {done} of {total} done"
+            snapshot = copy.deepcopy(self.state)
+        self._send(snapshot)
+
+    def _send(self, snapshot: dict) -> None:
+        if self.sink is None:
+            return
+        try:
+            self.sink(snapshot)
+        except Exception as e:
+            logger.warning("report_progress_failed", error=str(e))
+
+
 @dataclass
 class ReportResult:
     data: dict
@@ -80,7 +121,9 @@ def _run_process(ctx: dict, cand: Candidate) -> tuple[dict, LLMUsage, int]:
     data: IndexData = ctx["data"]
     rubric: Rubric = ctx["rubric"]
     zero = LLMUsage(input_tokens=0, output_tokens=0)
+    progress: ReportProgress = ctx["progress"]
     try:
+        progress.process(cand.name, "investigating")
         cr = process_card(ctx["llm"], ctx["inv_llm"], data, ctx["store"], ctx["repo_id"], cand, ctx["fresh"])
         usage = cr.usage
         paths = {p for p in [cand.entry, *cand.files, *cr.card["files"]] if p in data.blobs}
@@ -88,6 +131,7 @@ def _run_process(ctx: dict, cand: Candidate) -> tuple[dict, LLMUsage, int]:
         # Scores and write-up depend only on the card, the gates and the versions: cached on them.
         parts = (cr.card, gates, rubric.hash, ctx["pack"].version, ctx["llm"].config.model_id, ctx["prompts"])
         hit = ctx["cache"].get("process", *parts)
+        progress.process(cand.name, "scoring")
         searches = 0
         if hit is not None:
             bars, notes, dropped, searches = hit["bars"], hit["notes"], hit["dropped"], hit["searches"]
@@ -99,6 +143,7 @@ def _run_process(ctx: dict, cand: Candidate) -> tuple[dict, LLMUsage, int]:
                                            paths, gates, ctx["pack_text"])
             usage = usage + u
             result = rubric.overall({b: v["score"] for b, v in bars.items()})
+            progress.process(cand.name, "writing")
             writeup, u, searches, w_notes = write_process(
                 ctx["llm"], ctx["pack"], grounding, ctx["docs_search"], bars, result, gates,
                 cand.name, card_text(cr.card), records_text(data, paths, min_rel=0), ctx["pack_text"],
@@ -113,11 +158,13 @@ def _run_process(ctx: dict, cand: Candidate) -> tuple[dict, LLMUsage, int]:
     except Exception as e:
         logger.error("process_report_failed", process=cand.name, error=str(e))
         print(f"  ✗ {cand.name}: {e}")
+        progress.process(cand.name, "failed")
         return {"name": cand.name, "entry": cand.entry, "origin": cand.origin, "error": str(e)}, zero, 0
 
     titles = rubric.titles()
     kinds = {b["id"]: "path" for b in rubric.value_paths} | {b["id"]: "modifier" for b in rubric.modifiers}
     label = result["verdict_class"]
+    progress.process(cand.name, "done")
     print(f"  • {cand.name}: {result['overall']}/10 {label} | card {'reused' if cr.reused else f'{cr.tool_calls} tool calls'}"
           f", assessment {'reused' if hit is not None else 'new'} | ${usage.total_cost_usd:.4f}")
     return {
@@ -138,7 +185,10 @@ def _run_process(ctx: dict, cand: Candidate) -> tuple[dict, LLMUsage, int]:
 
 
 def build_report(llm, inv_llm, pack: Pack, rubric: Rubric, store, repo_id: str,
-                 docs_search: DocsSearch | None, source_root: Path | None, fresh: bool = False) -> ReportResult:
+                 docs_search: DocsSearch | None, source_root: Path | None, fresh: bool = False,
+                 progress_sink: Callable[[dict], None] | None = None) -> ReportResult:
+    progress = ReportProgress(progress_sink)
+    progress.update(phase="reading", detail="Reading the index")
     data = load_index(store, repo_id, source_root)
     lens = data.repo_lens
     status = lens["status"]
@@ -152,6 +202,7 @@ def build_report(llm, inv_llm, pack: Pack, rubric: Rubric, store, repo_id: str,
     # 1. Verify leads (gates always; review findings when there is Temporal code).
     print(f"Verifying leads for {repo_id} (status {status})...")
     leads, skipped = collect_leads(data, include_findings=do_evaluation)
+    progress.update(phase="leads", detail=f"Checking {len(leads)} lead{'' if len(leads) == 1 else 's'} against the source")
     results, u = verify_leads(llm, pack, data, leads, cache)
     usage = usage + u
     confirmed = [r for r in results if r.verdict == "confirmed"]
@@ -194,11 +245,13 @@ def build_report(llm, inv_llm, pack: Pack, rubric: Rubric, store, repo_id: str,
     # 2. Suitability, per process.
     if do_conversion:
         cands, over, uncovered = discover(data, exclude=temporal if status == "partial" else set())
+        progress.update(phase="processes", detail=f"Investigating processes: 0 of {len(cands)} done",
+                        processes=[{"name": c.name, "state": "pending"} for c in cands])
         print(f"Investigating {len(cands)} processes" + (f" ({len(over)} over the limit)" if over else "") + "...")
         ctx = {"llm": llm, "inv_llm": inv_llm, "pack": pack, "rubric": rubric, "data": data, "store": store,
                "repo_id": repo_id, "fresh": fresh, "gates": confirmed_gates, "grounding": grounding,
                "docs_search": docs_search, "pack_text": entries_text(pack, sections=CONVERSION_SECTIONS),
-               "cache": cache, "prompts": prompt_hash(SCORE_SYSTEM, WRITEUP_SYSTEM, DESIGN_TASK, UNSUITABLE_TASK,
+               "cache": cache, "progress": progress, "prompts": prompt_hash(SCORE_SYSTEM, WRITEUP_SYSTEM, DESIGN_TASK, UNSUITABLE_TASK,
                                                       GROUNDING, RETRY_NOTE)}
         with ThreadPoolExecutor(max_workers=PROCESS_WORKERS) as pool:
             outcomes = list(pool.map(lambda c: _run_process(ctx, c), cands))
@@ -226,6 +279,7 @@ def build_report(llm, inv_llm, pack: Pack, rubric: Rubric, store, repo_id: str,
     if do_evaluation:
         ebars, other = evaluation_bars(rubric, data, findings)
         print("Writing the evaluation...")
+        progress.update(phase="evaluation", detail="Reviewing the existing Temporal code")
         eval_parts = ([(finding_key(f), f.severity, f.line, f.reason) for f in findings], len(temporal),
                       pack.version, llm.config.model_id, prompt_hash(EVAL_SYSTEM, GROUNDING, RETRY_NOTE))
         hit = cache.get("evaluation", *eval_parts)
@@ -264,6 +318,7 @@ def build_report(llm, inv_llm, pack: Pack, rubric: Rubric, store, repo_id: str,
     report["cost_usd"] = round(usage.total_cost_usd, 4)
     report["sources"] = _sources(report, pack)
 
+    progress.update(phase="rendering", detail="Writing the report")
     print(f"  cache: {cache.hits} steps reused, {cache.misses} run")
     logger.info("report_built", repo_id=repo_id, cost_usd=report["cost_usd"], searches=searches,
                 cache_hits=cache.hits, cache_misses=cache.misses)

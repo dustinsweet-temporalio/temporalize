@@ -48,8 +48,20 @@ def default_activities() -> ImpactActivities:
                             load_mapping())
 
 
+
+def _apply_saved_key() -> None:
+    """An Anthropic key saved in the Temporalize setup screen takes precedence over .env (read at start)."""
+    try:
+        from semantic_ingress.runtime import apply_saved_settings
+        from utils.mongo import get_mongo_client
+
+        apply_saved_settings(get_mongo_client())
+    except Exception as e:
+        logger.warning("Could not read the saved settings: %s", e)
+
 async def main() -> None:
     logging.basicConfig(level=getattr(logging, LOG_LEVEL), format=LOG_FORMAT)
+    _apply_saved_key()
     client = await Client.connect(TEMPORAL_ADDRESS, namespace=TEMPORAL_NAMESPACE)
     worker, executor = build_worker(client, default_activities())
     stop = asyncio.Event()

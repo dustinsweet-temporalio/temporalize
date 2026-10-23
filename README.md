@@ -1,5 +1,7 @@
 # Code Atlas
 
+**Temporalize** (the UI at <http://localhost:8090>) takes an AE or SA from a repository to a running Temporal proof of concept with evidence, in eight screens: setup, a local scan, focus, success criteria, then (from **Start assessment**, the first point where anything leaves your machine) the Code Atlas report and scope, an approvable plan, generation with review and validation, and results with a review packet. See [docs/TEMPORALIZE.md](docs/TEMPORALIZE.md). The Code Atlas UI below is at <http://localhost:8090/atlas>.
+
 Ask questions about your code. Code Atlas indexes a git repository into a hierarchy of LLM-written summaries (files, then folders, up to the repository root), then answers questions by navigating that hierarchy and pulling in source code where needed.
 
 Everything runs locally in Docker. What leaves your machine: the LLM calls, which go to the Anthropic API with your key, and, with the Temporal lens on (the default), documentation searches sent to the Temporal Docs MCP (search questions only, never your code).
@@ -14,7 +16,7 @@ python3 scripts/mcp_login.py  # one-time sign-in to the Temporal Docs MCP (for t
 
 Skip the sign-in by setting `LENS_ENABLED=false` in `.env` if you do not want the Temporal lens.
 
-Open <http://localhost:8090> (change the port with `APP_PORT` in `.env`). The page opens on your indexes. Click **+ Add index**, choose a git repository, and start indexing (see [Indexing a repository](#indexing-a-repository)). When it is done, click the index (or pick it in the sidebar) and ask your question. Each conversation stays with the index it was started on; the index is shown above the chat and under the conversation's name, and a conversation is saved when you send its first question. Every prompt and answer has a **Copy** button (answers copy as Markdown, ready to paste into Claude Code), and **Open in Compass** above the chat opens the index's database in Compass Web. Indexing runs are visible in the Temporal UI at <http://localhost:8233> (the **Temporal UI** link at the bottom of the sidebar).
+Open <http://localhost:8090> for Temporalize, or <http://localhost:8090/atlas> for Code Atlas (change the port with `APP_PORT` in `.env`). Code Atlas opens on your indexes. Click **+ Add index**, choose a git repository, and start indexing (see [Indexing a repository](#indexing-a-repository)). When it is done, click the index (or pick it in the sidebar) and ask your question. Each conversation stays with the index it was started on; the index is shown above the chat and under the conversation's name, and a conversation is saved when you send its first question. Every prompt and answer has a **Copy** button (answers copy as Markdown, ready to paste into Claude Code), and **Open in Compass** above the chat opens the index's database in Compass Web. Indexing runs are visible in the Temporal UI at <http://localhost:8233> (the **Temporal UI** link at the bottom of the sidebar).
 
 ## Indexing a repository
 

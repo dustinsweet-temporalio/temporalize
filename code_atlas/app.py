@@ -15,7 +15,8 @@ Serves the chat UI and a small API:
     GET  /api/chat/{repo_id}/{session_id}/turns/{turn_id}/stream  reattach to a turn (after a reload)
 
 Indexing from the UI (pick a folder, check, sync, follow progress, delete) is in indexing.py;
-business impact from the Temporal report (/api/impact/...) is in impact_api.py.
+business impact from the Temporal report (/api/impact/...) is in impact_api.py; Temporalize
+(/api/tz/..., the UI at /) is in temporalize/api.py. The Code Atlas UI is at /atlas.
 
 Run with: uvicorn app:app --host 0.0.0.0 --port 8080
 """
@@ -69,6 +70,7 @@ from config import (
 )
 from impact_api import router as impact_router
 from indexing import router as indexing_router, ui_settings as indexing_settings
+from temporalize.api import router as temporalize_router
 from utils.mongo import get_mongo_client
 from utils.formatters.lens import index_lens_info
 from utils.validation import validate_repository
@@ -107,6 +109,12 @@ async def get_temporal() -> Client:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = _redis_factory()
+    try:  # an Anthropic key saved in the Temporalize setup screen takes precedence over .env
+        from semantic_ingress.runtime import apply_saved_settings
+
+        await asyncio.to_thread(apply_saved_settings, get_mongo_client())
+    except Exception as e:
+        logger.warning(f"Could not read the saved settings: {e}")
     try:
         yield
     finally:
@@ -116,6 +124,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Code Atlas", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.include_router(indexing_router)
 app.include_router(impact_router)
+app.include_router(temporalize_router)
 
 
 @app.middleware("http")
@@ -615,6 +624,13 @@ async def reattach(repo_id: str, session_id: str, turn_id: str, request: Request
 
 @app.get("/")
 def index():
+    """Temporalize, the first-run UI."""
+    return FileResponse(WEB_DIR / "tz" / "index.html")
+
+
+@app.get("/atlas")
+def atlas():
+    """The Code Atlas UI (indexes, chat, reports). Its assets are relative, so they resolve from /."""
     return FileResponse(WEB_DIR / "index.html")
 
 

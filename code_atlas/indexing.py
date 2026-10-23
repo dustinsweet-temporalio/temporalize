@@ -300,11 +300,17 @@ class SyncRequest(BaseModel):
     mode: Literal["new", "incremental", "force"]
 
 
-@router.post("/api/sync")
-async def start_sync(request: SyncRequest):
+class SyncStartError(Exception):
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+async def begin_sync(repo_id: str, folder: Path, mode: str, memo_extra: dict | None = None) -> dict:
     """
-    Start a sync on the worker service, after the checks `sync` makes (the preflight
-    included), so a problem shows in the form instead of in a stuck run.
+    Start a sync of `folder` (already validated) on the worker service, after the checks
+    `sync` makes (the preflight included). `memo_extra` adds to the run's memo (Temporalize
+    passes the model and extra exclusions). Raises SyncStartError with an HTTP status.
     """
     from temporalio.exceptions import WorkflowAlreadyStartedError
     from temporalio.common import WorkflowIDConflictPolicy
@@ -312,54 +318,69 @@ async def start_sync(request: SyncRequest):
     from semantic_ingress.config import IngestionConfig
     from semantic_ingress.preflight import PreflightError, run_preflight
 
-    repo_id = request.repo_id
-    try:
-        folder = await asyncio.to_thread(_repository, request.repo_path)
-    except PathError as e:
-        return _error(str(e), e.status)
     try:
         exists = await asyncio.to_thread(_index_exists, repo_id)
     except Exception as e:
-        return _error(f"MongoDB is not reachable: {e}", 503)
-    if request.mode == "new" and exists:
-        return _error(f"An index named {repo_id} already exists. Choose another name, or sync {repo_id} from the index list.", 409)
-    if request.mode != "new" and not exists:
-        return _error(f"There is no index named {repo_id}.", 404)
+        raise SyncStartError(f"MongoDB is not reachable: {e}", 503) from e
+    if mode == "new" and exists:
+        raise SyncStartError(f"An index named {repo_id} already exists. Choose another name, or sync {repo_id} "
+                             "from the index list.", 409)
+    if mode != "new" and not exists:
+        raise SyncStartError(f"There is no index named {repo_id}.", 404)
     if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        return _error("ANTHROPIC_API_KEY is not set. Add it to .env, then docker compose up -d.", 400)
+        raise SyncStartError("ANTHROPIC_API_KEY is not set. Add it to .env, then docker compose up -d.", 400)
     try:
         client = await temporal_client()
         if await _running(client, repo_id):
-            return _error(f"A sync of {repo_id} is already running.", 409)
+            raise SyncStartError(f"A sync of {repo_id} is already running.", 409)
+    except SyncStartError:
+        raise
     except Exception as e:
-        return _error(f"The Temporal server is not reachable: {e}", 503)
+        raise SyncStartError(f"The Temporal server is not reachable: {e}", 503) from e
 
     try:
         config = IngestionConfig(repo_path=folder, output_dir=Path("/tmp"), repo_id=repo_id, prefix=DB_PREFIX)
         await asyncio.to_thread(run_preflight, config, False)
     except PreflightError as e:
-        return _error(f"Preflight failed, so nothing was started: {e}", 400)
+        raise SyncStartError(f"Preflight failed, so nothing was started: {e}", 400) from e
     except Exception as e:
-        return _error(str(e), 400)
+        raise SyncStartError(str(e), 400) from e
 
     params = SyncParams(
-        repo_id=repo_id, prefix=DB_PREFIX, repo_path=str(folder), force=request.mode == "force",
+        repo_id=repo_id, prefix=DB_PREFIX, repo_path=str(folder), force=mode == "force",
         window_size=config.temporal.window_size, lens_enabled=config.lens.enabled,
     )
+    memo = sync_memo(repo_id, str(folder), ORIGIN_UI, report=params.lens_enabled and not params.no_report)
     try:
         handle = await client.start_workflow(
             WORKFLOW_NAME, SyncWorkflowInput(params=params),
             id=workflow_id(repo_id), task_queue=task_queue(repo_id),
             id_conflict_policy=WorkflowIDConflictPolicy.FAIL,
-            memo=sync_memo(repo_id, str(folder), ORIGIN_UI, report=params.lens_enabled and not params.no_report),
+            memo={**memo, **(memo_extra or {})},
         )
     except WorkflowAlreadyStartedError:
-        return _error(f"A sync of {repo_id} is already running.", 409)
+        raise SyncStartError(f"A sync of {repo_id} is already running.", 409) from None
     except Exception as e:
         logger.error(f"Starting the sync of {repo_id} failed: {e}", exc_info=True)
-        return _error(f"Could not start the sync: {e}", 503)
+        raise SyncStartError(f"Could not start the sync: {e}", 503) from e
     logger.info(f"Started {handle.id} for {folder}")
     return {"repo_id": repo_id, "workflow_id": handle.id, "run_id": handle.first_execution_run_id}
+
+
+@router.post("/api/sync")
+async def start_sync(request: SyncRequest):
+    """
+    Start a sync on the worker service, after the checks `sync` makes (the preflight
+    included), so a problem shows in the form instead of in a stuck run.
+    """
+    try:
+        folder = await asyncio.to_thread(_repository, request.repo_path)
+    except PathError as e:
+        return _error(str(e), e.status)
+    try:
+        return await begin_sync(request.repo_id, folder, request.mode)
+    except SyncStartError as e:
+        return _error(str(e), e.status)
 
 
 # ----------------------------------------------------------------------
@@ -402,8 +423,18 @@ async def _progress(client, execution, memo: dict) -> dict:
         else:
             text = "Waiting for a worker: run the same ./scripts/index.sh command again to resume"
         return {"phase": None, "percent": 0, "description": text, "waiting": True}
+    description = describe(p, lens=report)
+    if p.phase == "REPORT":  # the report takes minutes: say what it is doing
+        try:
+            from semantic_ingress.report.service import report_progress
+
+            rp = await asyncio.to_thread(report_progress, _ingress_store(), memo.get("repo_id", ""))
+            if rp and rp.get("detail"):
+                description = f"Building the Temporal report: {rp['detail']}"
+        except Exception:
+            pass
     return {
-        "phase": p.phase, "percent": percent(p, report), "description": describe(p, lens=report),
+        "phase": p.phase, "percent": percent(p, report), "description": description,
         "done": p.done, "total": p.total, "failed": p.failed, "cost_usd": round(usage_cost(p.usage), 4),
         "mode": p.plan.mode if p.plan else None,
     }

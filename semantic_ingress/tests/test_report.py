@@ -470,3 +470,21 @@ def test_incremental_repository_pass_sees_previous_processes():
     assert "PREVIOUS PROCESSES (keep stable):\n- Lead intake | entry dags/intake.py" in prompt
     assert prompt.endswith("CHANGED FILES:\ndags/store.py")
     assert "PREVIOUS PROCESSES" not in repo_user_prompt("t0", "rollup", "records", 0)
+
+
+def test_report_progress_tracks_each_process():
+    from semantic_ingress.report.run import ReportProgress
+
+    seen = []
+    progress = ReportProgress(seen.append)
+    progress.update(phase="processes", processes=[{"name": "A", "state": "pending"}, {"name": "B", "state": "pending"}])
+    progress.process("A", "investigating")
+    progress.process("A", "done")
+    assert seen[-1]["phase"] == "processes" and seen[-1]["detail"] == "Investigating processes: 1 of 2 done"
+    assert [p["state"] for p in seen[-1]["processes"]] == ["done", "pending"]
+    assert seen[1]["processes"][0]["state"] == "investigating"   # each update is a snapshot, not a shared dict
+
+    def broken(_state):
+        raise RuntimeError("mongo down")
+
+    ReportProgress(broken).update(phase="leads")   # a failing sink never fails the build

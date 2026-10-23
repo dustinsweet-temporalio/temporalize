@@ -27,13 +27,21 @@ def _clean(node: Any) -> Any:
         return [_clean(item) for item in node]
     if not isinstance(node, dict):
         return node
-    out = {k: _clean(v) for k, v in node.items() if k not in UNSUPPORTED_KEYS}
+    out = {k: _clean_names(v) if k in ("properties", "$defs") else _clean(v)
+           for k, v in node.items() if k not in UNSUPPORTED_KEYS}
     if out.get("type") == "object" or "properties" in out:
         props = {k: v for k, v in out.get("properties", {}).items() if k not in COMPUTED_FIELDS}
         out["properties"] = props
         out["required"] = list(props)
         out["additionalProperties"] = False
     return out
+
+
+def _clean_names(mapping: Any) -> Any:
+    """A properties or $defs mapping: its keys are names (a field may be called `title`), not keywords."""
+    if not isinstance(mapping, dict):
+        return _clean(mapping)
+    return {name: _clean(schema) for name, schema in mapping.items()}
 
 
 def _refs(node: Any) -> set[str]:

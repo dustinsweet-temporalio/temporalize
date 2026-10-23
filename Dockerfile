@@ -7,6 +7,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# git: Temporalize clones repositories, branches the POC workspace and pushes it
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first (cached unless they change)
 COPY code_atlas/requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
@@ -22,12 +25,13 @@ COPY web /app/web
 # Temporal knowledge pack (lens grounding)
 COPY knowledge /app/knowledge
 
-# Non-root user; /data holds the mirrored source (a named volume in compose)
-RUN useradd -m -u 1000 atlas && mkdir -p /data/source && chown -R atlas:atlas /data /app
+# Non-root user; /data holds the mirrored source and Temporalize's clones and workspaces (named volumes in compose)
+RUN useradd -m -u 1000 atlas && mkdir -p /data/source /data/tz/clones /data/tz/workspaces && chown -R atlas:atlas /data /app
 USER atlas
 
 WORKDIR /app/code_atlas
 ENV SOURCE_DIR=/data/source \
+    TZ_DATA_DIR=/data/tz \
     WEB_DIR=/app/web
 
 EXPOSE 8080
